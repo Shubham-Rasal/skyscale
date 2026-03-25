@@ -13,6 +13,7 @@ import (
 	"github.com/bluequbit/faas/control-plane/api"
 	"github.com/bluequbit/faas/control-plane/auth"
 	"github.com/bluequbit/faas/control-plane/registry"
+	"github.com/bluequbit/faas/control-plane/sandbox"
 	"github.com/bluequbit/faas/control-plane/scheduler"
 	"github.com/bluequbit/faas/control-plane/state"
 	"github.com/bluequbit/faas/control-plane/vm"
@@ -81,6 +82,11 @@ func main() {
 	apiHandler := api.NewAPIHandler(functionRegistry, vmManager, functionScheduler, authManager, stateManager, logger)
 	apiHandler.RegisterRoutes(router)
 
+	// Register sandbox API routes
+	sandboxManager := sandbox.NewSandboxManager(vmManager, stateManager, logger)
+	sandboxAPIHandler := api.NewSandboxAPIHandler(sandboxManager, logger)
+	api.RegisterSandboxAPIRoutes(router, sandboxAPIHandler)
+
 	// Add metrics endpoint
 	router.Handle("/metrics", promhttp.Handler())
 
@@ -106,7 +112,7 @@ func main() {
 		Addr:         ":8080",
 		Handler:      router,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		WriteTimeout: 300 * time.Second, // sandbox execs can run up to 5 minutes
 		IdleTimeout:  120 * time.Second,
 	}
 

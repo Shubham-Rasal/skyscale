@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -67,8 +68,8 @@ func NewVMManager(stateManager *state.StateManager, logger *logrus.Logger) (*VMM
 		stateManager: stateManager,
 		logger:       logger,
 		vmDir:        vmDir,
-		warmPoolSize: 5, // Default warm pool size
-		warmPool:     make(chan *state.VM, 5),
+		warmPoolSize: 2, // Keep pool small to save disk space (each VM copies ~385MB rootfs)
+		warmPool:     make(chan *state.VM, 2),
 		vms:          make(map[string]*VMInstance),
 	}
 
@@ -153,6 +154,13 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 		Kernel: getDefaultKernelPath(),
 		RootFS: getDefaultRootFSPath(),
 	}
+
+	// Copy rootfs for this VM (each VM needs its own writable copy)
+	vmRootFS := filepath.Join(vmDir, "rootfs.ext4")
+	if err := copyFile(config.RootFS, vmRootFS); err != nil {
+		return nil, fmt.Errorf("failed to copy rootfs: %v", err)
+	}
+	config.RootFS = vmRootFS
 
 	// Create context for VM operations
 	ctx := context.Background()
@@ -329,6 +337,11 @@ func (m *VMManager) terminateVM(id string) error {
 	return nil
 }
 
+// TerminateVM terminates a VM by ID (public wrapper for terminateVM)
+func (m *VMManager) TerminateVM(id string) error {
+	return m.terminateVM(id)
+}
+
 // assignIP assigns an IP address to a VM
 func (m *VMManager) assignIP() (string, error) {
 	// For simplicity, we'll use a hardcoded IP range
@@ -429,4 +442,22 @@ func (m *VMManager) GetOrCreateTestHostVM() (*state.VM, error) {
 
 	// VM doesn't exist, create it
 	return m.CreateTestHostVM()
+}
+
+// copyFile copies a file from src to dst.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }

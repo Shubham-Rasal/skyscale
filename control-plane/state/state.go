@@ -65,6 +65,83 @@ type VM struct {
 	IsWarm    bool
 }
 
+// Sandbox represents a long-lived isolated execution environment for AI agents
+type Sandbox struct {
+	ID         string    `gorm:"primaryKey"`
+	VMID       string    `gorm:"index"`
+	VMIP       string
+	Status     string    // "starting" | "ready" | "busy" | "destroyed"
+	Runtime    string    // "python3" | "bash"
+	CreatedAt  time.Time
+	LastUsedAt time.Time
+	ExpiresAt  time.Time
+	Metadata   string // JSON blob
+}
+
+// SandboxExec represents a single code execution within a sandbox
+type SandboxExec struct {
+	ID         string    `gorm:"primaryKey"`
+	SandboxID  string    `gorm:"index"`
+	Language   string
+	Status     string // "done" | "error" | "timeout"
+	Stdout     string
+	Stderr     string
+	ExitCode   int
+	StartedAt  time.Time
+	FinishedAt time.Time
+	DurationMs int64
+}
+
+// SaveSandbox saves a sandbox to the database
+func (s *StateManager) SaveSandbox(sandbox *Sandbox) error {
+	return s.db.Save(sandbox).Error
+}
+
+// GetSandbox retrieves a sandbox by ID
+func (s *StateManager) GetSandbox(id string) (*Sandbox, error) {
+	var sandbox Sandbox
+	if err := s.db.First(&sandbox, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &sandbox, nil
+}
+
+// ListSandboxes retrieves all sandboxes
+func (s *StateManager) ListSandboxes() ([]Sandbox, error) {
+	var sandboxes []Sandbox
+	return sandboxes, s.db.Find(&sandboxes).Error
+}
+
+// ListExpiredSandboxes retrieves sandboxes past their expiry time that aren't already destroyed
+func (s *StateManager) ListExpiredSandboxes() ([]Sandbox, error) {
+	var sandboxes []Sandbox
+	return sandboxes, s.db.Where("expires_at < ? AND status != ?", time.Now(), "destroyed").Find(&sandboxes).Error
+}
+
+// DeleteSandbox deletes a sandbox by ID
+func (s *StateManager) DeleteSandbox(id string) error {
+	return s.db.Delete(&Sandbox{}, "id = ?", id).Error
+}
+
+// SaveSandboxExec saves a sandbox execution record
+func (s *StateManager) SaveSandboxExec(exec *SandboxExec) error {
+	return s.db.Save(exec).Error
+}
+
+// GetSandboxExec retrieves a sandbox execution by ID
+func (s *StateManager) GetSandboxExec(id string) (*SandboxExec, error) {
+	var exec SandboxExec
+	if err := s.db.First(&exec, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &exec, nil
+}
+
+// NewStateManagerFromDB creates a StateManager from an existing *gorm.DB (for testing)
+func NewStateManagerFromDB(db *gorm.DB, logger *logrus.Logger) *StateManager {
+	return &StateManager{db: db, logger: logger}
+}
+
 // NewStateManager creates a new state manager
 func NewStateManager(logger *logrus.Logger) (*StateManager, error) {
 	// Initialize SQLite database
@@ -74,7 +151,7 @@ func NewStateManager(logger *logrus.Logger) (*StateManager, error) {
 	}
 
 	// Auto migrate the schema
-	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{})
+	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{})
 	if err != nil {
 		return nil, err
 	}

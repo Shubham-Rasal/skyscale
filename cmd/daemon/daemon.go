@@ -18,10 +18,11 @@ import (
 
 const (
 	// Configuration
-	controlPlaneURL = "http://172.16.0.1:8080" // Control plane URL (host machine)
-	daemonPort      = "8081"                   // Port for the daemon to listen on
-	codeDir         = "/tmp/faas/code"
-	logDir          = "/var/log/faas"
+	controlPlaneURL  = "http://192.168.1.1:8080" // Control plane URL (host machine via CNI gateway)
+	daemonPort       = "8081"                     // Port for the daemon to listen on
+	codeDir          = "/tmp/faas/code"
+	logDir           = "/var/log/faas"
+	sandboxWorkspace = "/sandbox/workspace" // Persistent workspace for sandbox sessions
 
 	// Endpoints
 	functionEndpoint = "/api/functions"
@@ -74,6 +75,7 @@ func init() {
 	// Create necessary directories
 	os.MkdirAll(codeDir, 0755)
 	os.MkdirAll(logDir, 0755)
+	os.MkdirAll(sandboxWorkspace, 0755)
 
 	// Initialize VM info
 	hostname, _ := os.Hostname()
@@ -112,6 +114,10 @@ func main() {
 	// Set up HTTP server for receiving function execution requests
 	http.HandleFunc("/execute", handleExecuteRequest)
 	http.HandleFunc("/health", handleHealthCheck)
+
+	// Sandbox endpoints (synchronous exec + file I/O)
+	http.HandleFunc("/sandbox/exec", handleSandboxExec)
+	http.HandleFunc("/sandbox/files/", handleSandboxFile)
 
 	// Start HTTP server
 	log.Printf("Starting HTTP server on port %s", daemonPort)
@@ -290,7 +296,11 @@ func prepareFunction(payload *FunctionPayload, execDir string) error {
 // runFunction executes the function with the specified runtime
 func runFunction(payload *FunctionPayload, execDir string) (string, error) {
 	var cmd *exec.Cmd
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(payload.Timeout)*time.Second)
+	timeout := payload.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	switch payload.Runtime {
@@ -322,7 +332,11 @@ func runFunction(payload *FunctionPayload, execDir string) (string, error) {
 			return "", fmt.Errorf("failed to marshal event: %v", err)
 		}
 
-		contextJSON, err := json.Marshal(payload.Context)
+		lambdaCtx := payload.Context
+		if lambdaCtx == nil {
+			lambdaCtx = make(map[string]any)
+		}
+		contextJSON, err := json.Marshal(lambdaCtx)
 		if err != nil {
 			return "", fmt.Errorf("failed to marshal context: %v", err)
 		}
@@ -462,4 +476,162 @@ func sendResult(client *http.Client, result *ExecutionResult) error {
 
 	log.Printf("Result sent successfully for request ID: %s", result.RequestID)
 	return nil
+}
+
+// ─── Sandbox handlers ────────────────────────────────────────────────────────
+
+// sandboxExecRequest is the request body for POST /sandbox/exec
+type sandboxExecRequest struct {
+	ExecID   string `json:"exec_id"`
+	Code     string `json:"code"`
+	Language string `json:"language"` // "python3" | "bash"
+	Timeout  int    `json:"timeout_seconds"`
+}
+
+// sandboxExecResponse is the response body for POST /sandbox/exec
+type sandboxExecResponse struct {
+	ExecID     string `json:"exec_id"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+// handleSandboxExec handles synchronous code execution inside the sandbox workspace.
+// Unlike /execute, this call blocks until the process exits and returns the result
+// directly in the HTTP response — no callback to the control plane.
+func handleSandboxExec(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req sandboxExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if req.Language == "" {
+		req.Language = "python3"
+	}
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	execID := req.ExecID
+	if execID == "" {
+		execID = fmt.Sprintf("exec-%d", time.Now().UnixNano())
+	}
+
+	log.Printf("Sandbox exec %s: language=%s, timeout=%ds", execID, req.Language, timeout)
+	startTime := time.Now()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	switch req.Language {
+	case "python3", "python":
+		scriptPath := filepath.Join(sandboxWorkspace, execID+".py")
+		if err := os.WriteFile(scriptPath, []byte(req.Code), 0644); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to write script: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer os.Remove(scriptPath)
+		cmd = exec.CommandContext(ctx, "python3", scriptPath)
+	case "bash", "sh":
+		scriptPath := filepath.Join(sandboxWorkspace, execID+".sh")
+		if err := os.WriteFile(scriptPath, []byte(req.Code), 0644); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to write script: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer os.Remove(scriptPath)
+		cmd = exec.CommandContext(ctx, "bash", scriptPath)
+	default:
+		http.Error(w, fmt.Sprintf("Unsupported language: %s", req.Language), http.StatusBadRequest)
+		return
+	}
+
+	cmd.Dir = sandboxWorkspace
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	exitCode := 0
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = 1
+		}
+	}
+
+	duration := time.Since(startTime).Milliseconds()
+	log.Printf("Sandbox exec %s done: exit=%d, duration=%dms", execID, exitCode, duration)
+
+	resp := sandboxExecResponse{
+		ExecID:     execID,
+		Stdout:     stdout.String(),
+		Stderr:     stderr.String(),
+		ExitCode:   exitCode,
+		DurationMs: duration,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleSandboxFile handles file uploads (POST) and downloads (GET) for the sandbox workspace.
+// The file path is taken from the URL after /sandbox/files/.
+func handleSandboxFile(w http.ResponseWriter, r *http.Request) {
+	// Strip "/sandbox/files/" prefix to get the relative path
+	relPath := strings.TrimPrefix(r.URL.Path, "/sandbox/files/")
+	if relPath == "" {
+		http.Error(w, "Missing file path", http.StatusBadRequest)
+		return
+	}
+
+	// Prevent path traversal
+	fullPath := filepath.Join(sandboxWorkspace, filepath.Clean("/"+relPath))
+	if !strings.HasPrefix(fullPath, sandboxWorkspace) {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to create directory: %v", err), http.StatusInternalServerError)
+			return
+		}
+		f, err := os.Create(fullPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to create file: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+		if _, err := io.Copy(f, r.Body); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to write file: %v", err), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("Uploaded file: %s", fullPath)
+		w.WriteHeader(http.StatusOK)
+
+	case http.MethodGet:
+		f, err := os.Open(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, "File not found", http.StatusNotFound)
+			} else {
+				http.Error(w, fmt.Sprintf("Failed to open file: %v", err), http.StatusInternalServerError)
+			}
+			return
+		}
+		defer f.Close()
+		log.Printf("Downloaded file: %s", fullPath)
+		io.Copy(w, f)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }

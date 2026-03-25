@@ -122,6 +122,11 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	api.HandleFunc("/results", h.handleResultHandler).Methods("POST")
 }
 
+// RegisterSandboxAPIRoutes wires the sandbox API handler into the provided router
+func RegisterSandboxAPIRoutes(router *mux.Router, sandboxHandler *SandboxAPIHandler) {
+	sandboxHandler.RegisterSandboxRoutes(router)
+}
+
 // healthHandler handles health check requests
 func (h *APIHandler) healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
