@@ -295,7 +295,7 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 			"requirements": code.Requirements,
 			"config":       code.Config,
 			"runtime":      function.Runtime,
-			"entry_point":  "handler.handler", // Default entry point
+			"entry_point":  "handler.handle", // handler.py is always the filename; function is named handle by convention
 			"environment":  map[string]string{},
 			"request_id":   request.RequestID,
 			"timeout":      function.Timeout,
