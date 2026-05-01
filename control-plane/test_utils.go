@@ -67,10 +67,13 @@ func isDaemonRunning() bool {
 func startDaemon(logger *logrus.Logger) error {
 	logger.Info("Starting daemon process")
 
-	// Get the path to the daemon binary
-	daemonPath := filepath.Join(os.Getenv("HOME"), "Dev", "faas", "cmd", "deamon", "daemon")
+	// Get the path to the daemon binary — configurable via DAEMON_PATH env var
+	daemonPath := os.Getenv("DAEMON_PATH")
+	if daemonPath == "" {
+		daemonPath = filepath.Join(os.Getenv("HOME"), "Dev", "faas", "cmd", "deamon", "daemon")
+	}
 	if _, err := os.Stat(daemonPath); os.IsNotExist(err) {
-		return fmt.Errorf("daemon binary not found at %s", daemonPath)
+		return fmt.Errorf("daemon binary not found at %s (set DAEMON_PATH env var)", daemonPath)
 	}
 
 	// Set environment variables for the daemon

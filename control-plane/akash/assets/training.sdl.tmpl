@@ -1,0 +1,48 @@
+version: "2.0"
+services:
+  trainer:
+    image: {{.DockerImage}}
+    env:
+      - JOB_ID={{.JobID}}
+      - EXECUTION_ID={{.ExecutionID}}
+      - CONTROL_PLANE_URL={{.ControlPlaneURL}}
+      {{- range $k, $v := .EnvVars}}
+      - {{$k}}={{$v}}
+      {{- end}}
+    expose:
+      - port: 8082
+        as: 8082
+        proto: tcp
+        to:
+          - global: true
+profiles:
+  compute:
+    trainer:
+      resources:
+        gpu:
+          units: 1
+          attributes:
+            vendor:
+              nvidia:
+                - model: rtx3090
+                - model: rtx3080
+                - model: a100
+                - model: a6000
+                - model: h100
+        cpu:
+          units: 2
+        memory:
+          size: 8Gi
+        storage:
+          - size: 10Gi
+  placement:
+    akash:
+      pricing:
+        trainer:
+          denom: uakt
+          amount: 100000
+deployment:
+  trainer:
+    akash:
+      profile: trainer
+      count: 1

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bluequbit/faas/control-plane/akash"
 	"github.com/bluequbit/faas/control-plane/state"
 	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
@@ -27,25 +28,32 @@ import (
 // VMManager manages the lifecycle of Firecracker micro-VMs
 type VMManager struct {
 	stateManager *state.StateManager
+	akashClient  *akash.Client
 	logger       *logrus.Logger
 	vmDir        string
 	warmPoolSize int
 	warmPool     chan *state.VM
 	mu           sync.Mutex
+	akashMu      sync.Mutex // serialises Akash deployment creation
 	vms          map[string]*VMInstance
 }
 
-// VMInstance represents a running Firecracker VM instance
+// VMInstance represents a running Firecracker VM instance or Akash deployment
 type VMInstance struct {
-	ID        string
-	IP        string
-	Machine   *firecracker.Machine
-	Status    string
-	CreatedAt time.Time
-	LastUsed  time.Time
-	Memory    int
-	CPU       int
-	IsWarm    bool
+	ID                string
+	IP                string
+	Machine           *firecracker.Machine
+	Status            string
+	CreatedAt         time.Time
+	LastUsed          time.Time
+	Memory            int
+	CPU               int
+	IsWarm            bool
+	HardwareType      string // "cpu", "gpu"
+	GPUModel          string // e.g. "nvidia-t4"
+	VRAMmb            int
+	AkashDeploymentID string // dseq if Akash-provisioned
+	ProviderAddr      string // Akash provider address
 }
 
 // VMConfig represents the configuration for a VM
@@ -54,6 +62,18 @@ type VMConfig struct {
 	CPU    int
 	Kernel string
 	RootFS string
+}
+
+// ComputeRequest describes what kind of compute a deployment or job needs.
+type ComputeRequest struct {
+	HardwareType    string // "cpu" | "gpu"
+	GPUModel        string // e.g. "a100", "t4"
+	DockerImage     string // for Akash GPU containers
+	Memory          int
+	CPU             int
+	JobID           string
+	ExecutionID     string
+	ControlPlaneURL string
 }
 
 // NewVMManager creates a new VM manager
@@ -66,6 +86,7 @@ func NewVMManager(stateManager *state.StateManager, logger *logrus.Logger) (*VMM
 
 	manager := &VMManager{
 		stateManager: stateManager,
+		akashClient:  akash.NewClient(logger),
 		logger:       logger,
 		vmDir:        vmDir,
 		warmPoolSize: 2, // Keep pool small to save disk space (each VM copies ~385MB rootfs)
@@ -256,14 +277,15 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 
 	// Create VM in state manager
 	vm := &state.VM{
-		ID:        id,
-		Status:    vmInstance.Status,
-		IP:        vmInstance.IP,
-		CreatedAt: vmInstance.CreatedAt,
-		LastUsed:  vmInstance.LastUsed,
-		Memory:    config.Memory,
-		CPU:       config.CPU,
-		IsWarm:    isWarm,
+		ID:           id,
+		Status:       vmInstance.Status,
+		IP:           vmInstance.IP,
+		CreatedAt:    vmInstance.CreatedAt,
+		LastUsed:     vmInstance.LastUsed,
+		Memory:       config.Memory,
+		CPU:          config.CPU,
+		IsWarm:       isWarm,
+		HardwareType: "cpu",
 	}
 
 	if err := m.stateManager.SaveVM(vm); err != nil {
@@ -373,6 +395,83 @@ func (m *VMManager) GetVMStatus(id string) (string, error) {
 	return vm.Status, nil
 }
 
+// GetAkashVM provisions a GPU VM via Akash Network for a training job.
+// jobID is used to generate the SDL and label the deployment.
+func (m *VMManager) GetAkashVM(jobID, executionID, gpuModel, dockerImage, controlPlaneURL string) (*state.VM, error) {
+	if gpuModel == "" {
+		gpuModel = "a100"
+	}
+	if dockerImage == "" {
+		dockerImage = "ghcr.io/shubham-rasal/skyscale/skyscale-trainer:latest"
+	}
+
+	// Reuse an idle GPU deployment if one is available for this GPU model.
+	if existing, err := m.stateManager.ClaimIdleGPUVM(gpuModel); err == nil {
+		m.logger.Infof("Reusing existing Akash deployment %s (gpu=%s) for job %s", existing.AkashDeploymentID, gpuModel, jobID)
+		return existing, nil
+	}
+
+	sdlData := akash.SDLData{
+		DockerImage:     dockerImage,
+		JobID:           jobID,
+		ExecutionID:     executionID,
+		ControlPlaneURL: controlPlaneURL,
+		GPUModel:        gpuModel,
+	}
+	sdl, err := m.akashClient.GenerateTrainingSDL(sdlData)
+	if err != nil {
+		return nil, fmt.Errorf("generate SDL: %w", err)
+	}
+
+	// Serialise deployments: Akash ties dseq to the wallet, so concurrent
+	// submissions from the same key collide with "already exists".
+	m.akashMu.Lock()
+	deployment, err := m.akashClient.CreateDeployment(sdl, jobID)
+	m.akashMu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("create Akash deployment: %w", err)
+	}
+
+	vm := &state.VM{
+		ID:                deployment.ID,
+		Status:            "busy",
+		IP:                deployment.IP,
+		DaemonPort:        deployment.Port,
+		CreatedAt:         time.Now(),
+		LastUsed:          time.Now(),
+		HardwareType:      "gpu",
+		GPUModel:          gpuModel,
+		AkashDeploymentID: deployment.ID,
+		ProviderAddr:      deployment.ProviderAddr,
+	}
+	if err := m.stateManager.SaveVM(vm); err != nil {
+		m.logger.Errorf("Failed to save Akash VM to state: %v", err)
+	}
+
+	m.logger.Infof("Provisioned new Akash GPU deployment %s for job %s", deployment.ID, jobID)
+	return vm, nil
+}
+
+// ReturnAkashVM marks a GPU deployment as idle so it can be reused.
+func (m *VMManager) ReturnAkashVM(dseq string) error {
+	vm, err := m.stateManager.GetVM(dseq)
+	if err != nil {
+		return err
+	}
+	vm.Status = "ready"
+	vm.LastUsed = time.Now()
+	m.logger.Infof("Returned Akash deployment %s to idle pool", dseq)
+	return m.stateManager.SaveVM(vm)
+}
+
+// CloseAkashVM closes an Akash deployment and removes it from state.
+func (m *VMManager) CloseAkashVM(dseq string) error {
+	if err := m.akashClient.CloseDeployment(dseq); err != nil {
+		m.logger.Errorf("Failed to close Akash deployment %s: %v", dseq, err)
+	}
+	return m.stateManager.DeleteVM(dseq)
+}
+
 // ListVMs lists all VMs
 func (m *VMManager) ListVMs() ([]state.VM, error) {
 	return m.stateManager.ListVMs()
@@ -381,6 +480,40 @@ func (m *VMManager) ListVMs() ([]state.VM, error) {
 // GetVMByID gets a VM by ID
 func (m *VMManager) GetVMByID(id string) (*state.VM, error) {
 	return m.stateManager.GetVM(id)
+}
+
+// GetCompute allocates CPU (Firecracker warm pool) or GPU (Akash) from a single entry point.
+func (m *VMManager) GetCompute(req ComputeRequest) (*state.VM, error) {
+	if req.HardwareType == "gpu" {
+		jobID := req.JobID
+		if jobID == "" {
+			jobID = "gpu-job"
+		}
+		execID := req.ExecutionID
+		if execID == "" {
+			execID = jobID
+		}
+		return m.GetAkashVM(jobID, execID, req.GPUModel, req.DockerImage, req.ControlPlaneURL)
+	}
+	vm, err := m.GetVM()
+	if err != nil && os.Getenv("DAEMON_PATH") != "" {
+		// Test mode: Firecracker is not available; fall back to the local host VM.
+		m.logger.Warn("GetVM failed in test mode, falling back to test host VM")
+		return m.GetOrCreateTestHostVM()
+	}
+	return vm, err
+}
+
+// ReleaseCompute returns compute to the warm pool (CPU) or idle pool (GPU).
+func (m *VMManager) ReleaseCompute(vmID string) error {
+	vm, err := m.stateManager.GetVM(vmID)
+	if err != nil {
+		return err
+	}
+	if vm.HardwareType == "gpu" {
+		return m.ReturnAkashVM(vmID)
+	}
+	return m.ReturnVM(vmID)
 }
 
 // CreateTestHostVM creates a test VM that represents the host machine for testing
@@ -395,14 +528,15 @@ func (m *VMManager) CreateTestHostVM() (*state.VM, error) {
 
 	// Create VM in state manager
 	vm := &state.VM{
-		ID:        id,
-		Status:    "ready",
-		IP:        ip,
-		CreatedAt: time.Now(),
-		LastUsed:  time.Now(),
-		Memory:    1024, // 1GB
-		CPU:       2,    // 2 cores
-		IsWarm:    true,
+		ID:           id,
+		Status:       "ready",
+		IP:           ip,
+		CreatedAt:    time.Now(),
+		LastUsed:     time.Now(),
+		Memory:       1024, // 1GB
+		CPU:          2,    // 2 cores
+		IsWarm:       true,
+		HardwareType: "cpu",
 	}
 
 	if err := m.stateManager.SaveVM(vm); err != nil {

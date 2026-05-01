@@ -1,1 +1,3 @@
-*.db
+*.db.env
+.env
+.env.*

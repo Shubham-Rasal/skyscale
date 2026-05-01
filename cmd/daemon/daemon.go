@@ -18,8 +18,7 @@ import (
 
 const (
 	// Configuration
-	controlPlaneURL  = "http://192.168.1.1:8080" // Control plane URL (host machine via CNI gateway)
-	daemonPort       = "8081"                     // Port for the daemon to listen on
+	daemonPort = "8081" // Port for the daemon to listen on
 	codeDir          = "/tmp/faas/code"
 	logDir           = "/var/log/faas"
 	sandboxWorkspace = "/sandbox/workspace" // Persistent workspace for sandbox sessions
@@ -70,12 +69,19 @@ type VMInfo struct {
 
 var vmInfo VMInfo
 var httpClient *http.Client
+var controlPlaneURL string
 
 func init() {
 	// Create necessary directories
 	os.MkdirAll(codeDir, 0755)
 	os.MkdirAll(logDir, 0755)
 	os.MkdirAll(sandboxWorkspace, 0755)
+
+	// Read control plane URL from env, fall back to Firecracker CNI gateway
+	controlPlaneURL = os.Getenv("CONTROL_PLANE_URL")
+	if controlPlaneURL == "" {
+		controlPlaneURL = "http://192.168.1.1:8080"
+	}
 
 	// Initialize VM info
 	hostname, _ := os.Hostname()
@@ -113,6 +119,7 @@ func main() {
 
 	// Set up HTTP server for receiving function execution requests
 	http.HandleFunc("/execute", handleExecuteRequest)
+	http.HandleFunc("/serve", handleServeRequest)
 	http.HandleFunc("/health", handleHealthCheck)
 
 	// Sandbox endpoints (synchronous exec + file I/O)

@@ -21,6 +21,7 @@ type APIHandler struct {
 	scheduler        *scheduler.Scheduler
 	authManager      *auth.AuthManager
 	stateManager     *state.StateManager
+	trainingMetrics  *TrainingMetricsStore
 	logger           *logrus.Logger
 }
 
@@ -37,8 +38,13 @@ type FunctionRequest struct {
 
 // InvokeRequest represents a request to invoke a function
 type InvokeRequest struct {
-	Input map[string]interface{} `json:"input"`
-	Sync  bool                   `json:"sync"`
+	Input           map[string]any `json:"input"`
+	Sync            bool           `json:"sync"`
+	JobType         string         `json:"job_type"`      // "faas_function", "training_run", "rl_env"
+	HardwareType    string         `json:"hardware_type"` // "cpu", "gpu"
+	GPUModel        string         `json:"gpu_model"`     // e.g. "nvidia-t4"
+	DockerImage     string         `json:"docker_image"`  // for GPU training jobs
+	ControlPlaneURL string         `json:"control_plane_url"`
 }
 
 // APIKeyRequest represents a request to generate an API key
@@ -68,13 +74,14 @@ type ExecutionResult struct {
 }
 
 // NewAPIHandler creates a new API handler
-func NewAPIHandler(functionRegistry *registry.FunctionRegistry, vmManager *vm.VMManager, scheduler *scheduler.Scheduler, authManager *auth.AuthManager, stateManager *state.StateManager, logger *logrus.Logger) *APIHandler {
+func NewAPIHandler(functionRegistry *registry.FunctionRegistry, vmManager *vm.VMManager, sched *scheduler.Scheduler, authManager *auth.AuthManager, stateManager *state.StateManager, logger *logrus.Logger) *APIHandler {
 	return &APIHandler{
 		functionRegistry: functionRegistry,
 		vmManager:        vmManager,
-		scheduler:        scheduler,
+		scheduler:        sched,
 		authManager:      authManager,
 		stateManager:     stateManager,
+		trainingMetrics:  NewTrainingMetricsStore(),
 		logger:           logger,
 	}
 }
@@ -110,6 +117,7 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	// Execution routes
 	executions := api.PathPrefix("/executions").Subrouter()
 	executions.HandleFunc("/{id}", h.getExecutionHandler).Methods("GET")
+	executions.HandleFunc("/{id}/complete", h.completeExecutionHandler).Methods("POST")
 	executions.HandleFunc("/function/{id}", h.listExecutionsHandler).Methods("GET")
 
 	// VM routes
@@ -275,7 +283,13 @@ func (h *APIHandler) invokeFunctionHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Invoke function
-	response, err := h.scheduler.ScheduleExecution(id, req.Input, req.Sync)
+	response, err := h.scheduler.ScheduleExecution(id, req.Input, req.Sync, scheduler.JobOptions{
+		JobType:         req.JobType,
+		HardwareType:    req.HardwareType,
+		GPUModel:        req.GPUModel,
+		DockerImage:     req.DockerImage,
+		ControlPlaneURL: req.ControlPlaneURL,
+	})
 	if err != nil {
 		http.Error(w, "Failed to invoke function: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -300,7 +314,13 @@ func (h *APIHandler) invokeFunctionByNameHandler(w http.ResponseWriter, r *http.
 	}
 
 	// Invoke function
-	response, err := h.scheduler.ScheduleExecutionByName(name, req.Input, req.Sync)
+	response, err := h.scheduler.ScheduleExecutionByName(name, req.Input, req.Sync, scheduler.JobOptions{
+		JobType:         req.JobType,
+		HardwareType:    req.HardwareType,
+		GPUModel:        req.GPUModel,
+		DockerImage:     req.DockerImage,
+		ControlPlaneURL: req.ControlPlaneURL,
+	})
 	if err != nil {
 		http.Error(w, "Failed to invoke function: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -326,6 +346,39 @@ func (h *APIHandler) getExecutionHandler(w http.ResponseWriter, r *http.Request)
 	// Return execution
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(execution)
+}
+
+// completeExecutionHandler is called by the training container when training finishes.
+func (h *APIHandler) completeExecutionHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	var body struct {
+		Status string `json:"status"`
+		Output string `json:"output"`
+		Error  string `json:"error"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	execution, err := h.stateManager.GetExecution(id)
+	if err != nil {
+		http.Error(w, "Execution not found", http.StatusNotFound)
+		return
+	}
+
+	status := body.Status
+	if status == "" {
+		status = "completed"
+	}
+	execution.Status = status
+	execution.Logs = body.Output
+	execution.Error = body.Error
+	execution.EndTime = time.Now()
+	execution.Duration = time.Since(execution.StartTime).Milliseconds()
+	h.stateManager.SaveExecution(execution)
+
+	h.logger.Infof("Execution %s completed via callback: status=%s", id, status)
+	w.WriteHeader(http.StatusOK)
 }
 
 // listExecutionsHandler handles execution listing requests

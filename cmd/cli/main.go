@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mitchellh/go-homedir"
@@ -176,17 +179,23 @@ entrypoint: handler.handler`,
 }
 
 var deployCmd = &cobra.Command{
-	Use:   "deploy [function_name]",
-	Short: "Deploy a function to Skyscale",
+	Use:   "deploy [path]",
+	Short: "Deploy a function directory or a Python App file (.py)",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		functionName := args[0]
-		err := deployFunction(functionName)
-		if err != nil {
-			fmt.Printf("❌ Error deploying function: %v\n", err)
-			os.Exit(1)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		p := args[0]
+		if strings.HasSuffix(strings.ToLower(p), ".py") {
+			if err := deployPythonApp(p); err != nil {
+				return err
+			}
+			fmt.Println("✅ App deployed.")
+			return nil
 		}
-		fmt.Printf("✅ Function '%s' deployed successfully.\n", functionName)
+		if err := deployFunction(p); err != nil {
+			return err
+		}
+		fmt.Printf("✅ Function '%s' deployed successfully.\n", p)
+		return nil
 	},
 }
 
@@ -209,6 +218,75 @@ func makeAuthenticatedRequest(method, url string, body []byte) (*http.Response, 
 	// Make the request
 	client := &http.Client{}
 	return client.Do(req)
+}
+
+func findSDKPythonRoot() string {
+	if d := os.Getenv("SKYSCALE_SDK_PYTHON"); d != "" {
+		return d
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for _, rel := range []string{".", "..", "../..", "../../..", "../../../.."} {
+		root := filepath.Clean(filepath.Join(wd, rel))
+		cand := filepath.Join(root, "sdk", "python")
+		if st, err := os.Stat(filepath.Join(cand, "skyscale", "__init__.py")); err == nil && !st.IsDir() {
+			abs, _ := filepath.Abs(cand)
+			return abs
+		}
+	}
+	return ""
+}
+
+func deployPythonApp(pyFile string) error {
+	sdkRoot := findSDKPythonRoot()
+	if sdkRoot == "" {
+		return fmt.Errorf("could not find sdk/python; set SKYSCALE_SDK_PYTHON or run from the repo root")
+	}
+	absFile, err := filepath.Abs(pyFile)
+	if err != nil {
+		return err
+	}
+	c := exec.Command("python3", "-m", "skyscale._deploy", absFile)
+	c.Env = append(os.Environ(), "PYTHONPATH="+sdkRoot)
+	out, err := c.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("failed to build deployment spec: %w\n%s", err, string(ee.Stderr))
+		}
+		return err
+	}
+	var specs []map[string]any
+	if err := json.Unmarshal(out, &specs); err != nil {
+		return fmt.Errorf("bad spec JSON from Python: %w", err)
+	}
+	for _, spec := range specs {
+		body, err := json.Marshal(spec)
+		if err != nil {
+			return err
+		}
+		resp, err := makeAuthenticatedRequest("POST", baseURL+"/api/deployments", body)
+		if err != nil {
+			return err
+		}
+		ep, _ := spec["endpoint_name"].(string)
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("deploy %s: %s", ep, string(raw))
+		}
+		var result struct {
+			ID   string `json:"id"`
+			URL  string `json:"url"`
+			Slug string `json:"slug"`
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return fmt.Errorf("parse response for %s: %w", ep, err)
+		}
+		fmt.Printf("  ✓  %s\n     %s\n\n", ep, result.URL)
+	}
+	return nil
 }
 
 func deployFunction(functionName string) error {

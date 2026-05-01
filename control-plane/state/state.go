@@ -42,27 +42,36 @@ type Function struct {
 
 // Execution represents a function execution
 type Execution struct {
-	ID         string `gorm:"primaryKey"`
-	FunctionID string
-	Status     string
-	StartTime  time.Time
-	EndTime    time.Time
-	Duration   int64
-	VMID       string
-	Logs       string
-	Error      string
+	ID           string `gorm:"primaryKey"`
+	FunctionID   string
+	Status       string
+	StartTime    time.Time
+	EndTime      time.Time
+	Duration     int64
+	VMID         string
+	Logs         string
+	Error        string
+	JobType      string // "faas_function", "training_run", "rl_env"
+	HardwareType string // "cpu", "gpu"
+	GPUModel     string // e.g. "nvidia-t4"
 }
 
-// VM represents a Firecracker micro-VM
+// VM represents a Firecracker micro-VM or Akash GPU deployment
 type VM struct {
-	ID        string `gorm:"primaryKey"`
-	Status    string
-	IP        string
-	CreatedAt time.Time
-	LastUsed  time.Time
-	Memory    int
-	CPU       int
-	IsWarm    bool
+	ID                string `gorm:"primaryKey"`
+	Status            string
+	IP                string
+	CreatedAt         time.Time
+	LastUsed          time.Time
+	Memory            int
+	CPU               int
+	IsWarm            bool
+	HardwareType      string // "cpu", "gpu"
+	GPUModel          string // e.g. "nvidia-t4", empty for cpu
+	VRAMmb            int    // VRAM in MB, 0 for cpu
+	AkashDeploymentID string // dseq if Akash-provisioned, empty for Firecracker
+	ProviderAddr      string // Akash provider address
+	DaemonPort        int    // external port for daemon (Akash forwarded port)
 }
 
 // Sandbox represents a long-lived isolated execution environment for AI agents
@@ -76,6 +85,25 @@ type Sandbox struct {
 	LastUsedAt time.Time
 	ExpiresAt  time.Time
 	Metadata   string // JSON blob
+}
+
+// Deployment is a long-lived web endpoint backed by a VM workload.
+type Deployment struct {
+	ID              string    `gorm:"primaryKey" json:"id"`
+	Slug            string    `gorm:"uniqueIndex" json:"slug"`
+	AppName         string    `json:"app_name"`
+	EndpointName    string    `json:"endpoint_name"`
+	VMID            string    `json:"vm_id"`
+	VMPort          int       `json:"vm_port"`
+	WebPath         string    `json:"web_path"`
+	WebMethod       string    `json:"web_method"`
+	URL             string    `json:"url"`
+	Status          string    `json:"status"`
+	HardwareType    string    `json:"hardware_type"`
+	GPUModel        string    `json:"gpu_model"`
+	ScaledownWindow int       `json:"scaledown_window"`
+	LastRequestAt   time.Time `json:"last_request_at"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // SandboxExec represents a single code execution within a sandbox
@@ -151,7 +179,7 @@ func NewStateManager(logger *logrus.Logger) (*StateManager, error) {
 	}
 
 	// Auto migrate the schema
-	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{})
+	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{}, &Deployment{})
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +265,13 @@ func (s *StateManager) ListExecutions(functionID string) ([]Execution, error) {
 	return executions, err
 }
 
+// ListRecentExecutions returns the N most recent executions across all functions.
+func (s *StateManager) ListRecentExecutions(limit int) ([]Execution, error) {
+	var executions []Execution
+	err := s.db.Order("start_time desc").Limit(limit).Find(&executions).Error
+	return executions, err
+}
+
 // SaveVM saves a VM to the database
 func (s *StateManager) SaveVM(vm *VM) error {
 	return s.db.Save(vm).Error
@@ -269,6 +304,52 @@ func (s *StateManager) ListWarmVMs() ([]VM, error) {
 // DeleteVM deletes a VM by ID
 func (s *StateManager) DeleteVM(id string) error {
 	return s.db.Delete(&VM{}, "id = ?", id).Error
+}
+
+// SaveDeployment persists a deployment record.
+func (s *StateManager) SaveDeployment(d *Deployment) error {
+	return s.db.Save(d).Error
+}
+
+// GetDeployment retrieves a deployment by ID.
+func (s *StateManager) GetDeployment(id string) (*Deployment, error) {
+	var d Deployment
+	if err := s.db.First(&d, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// GetDeploymentBySlug finds a deployment by its public URL slug.
+func (s *StateManager) GetDeploymentBySlug(slug string) (*Deployment, error) {
+	var d Deployment
+	if err := s.db.First(&d, "slug = ?", slug).Error; err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// ListDeployments returns all deployments.
+func (s *StateManager) ListDeployments() ([]Deployment, error) {
+	var out []Deployment
+	return out, s.db.Order("created_at desc").Find(&out).Error
+}
+
+// ClaimIdleGPUVM atomically finds a ready GPU VM matching the model and marks it busy.
+// Returns nil if none available.
+func (s *StateManager) ClaimIdleGPUVM(gpuModel string) (*VM, error) {
+	var vm VM
+	err := s.db.Where("hardware_type = ? AND gpu_model = ? AND status = ?", "gpu", gpuModel, "ready").
+		Order("last_used asc").First(&vm).Error
+	if err != nil {
+		return nil, err // not found or DB error
+	}
+	vm.Status = "busy"
+	vm.LastUsed = time.Now()
+	if err := s.db.Save(&vm).Error; err != nil {
+		return nil, err
+	}
+	return &vm, nil
 }
 
 // TrackActiveExecution adds an execution to the active executions map

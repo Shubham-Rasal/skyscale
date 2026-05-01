@@ -44,12 +44,17 @@ type Scheduler struct {
 
 // ExecutionRequest represents a request to execute a function
 type ExecutionRequest struct {
-	FunctionID   string
-	FunctionName string
-	Input        map[string]interface{}
-	Event        map[string]interface{}
-	Sync         bool
-	RequestID    string
+	FunctionID      string
+	FunctionName    string
+	Input           map[string]interface{}
+	Event           map[string]interface{}
+	Sync            bool
+	RequestID       string
+	JobType         string // "faas_function", "training_run", "rl_env"
+	HardwareType    string // "cpu", "gpu"
+	GPUModel        string // e.g. "nvidia-t4"
+	DockerImage     string // for GPU training jobs
+	ControlPlaneURL string // for GPU training callback
 }
 
 // ExecutionContext tracks the context of a function execution
@@ -95,22 +100,41 @@ func NewScheduler(vmManager *vm.VMManager, functionRegistry *registry.FunctionRe
 	return scheduler, nil
 }
 
+// JobOptions carries optional fields for hardware-aware job routing.
+type JobOptions struct {
+	JobType         string
+	HardwareType    string
+	GPUModel        string
+	DockerImage     string
+	ControlPlaneURL string
+}
+
 // ScheduleExecution schedules a function for execution by ID
-func (s *Scheduler) ScheduleExecution(functionID string, input map[string]interface{}, sync bool) (*ExecutionResult, error) {
+func (s *Scheduler) ScheduleExecution(functionID string, input map[string]interface{}, sync bool, opts ...JobOptions) (*ExecutionResult, error) {
 	// Validate function exists
 	_, err := s.functionRegistry.GetFunction(functionID)
 	if err != nil {
 		return nil, fmt.Errorf("function not found: %v", err)
 	}
 
+	var opt JobOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
 	// Create execution request
 	requestID := uuid.New().String()
 	request := &ExecutionRequest{
-		FunctionID: functionID,
-		Input:      input,
-		Event:      input, // Use input as event for backward compatibility
-		Sync:       sync,
-		RequestID:  requestID,
+		FunctionID:      functionID,
+		Input:           input,
+		Event:           input,
+		Sync:            sync,
+		RequestID:       requestID,
+		JobType:         opt.JobType,
+		HardwareType:    opt.HardwareType,
+		GPUModel:        opt.GPUModel,
+		DockerImage:     opt.DockerImage,
+		ControlPlaneURL: opt.ControlPlaneURL,
 	}
 
 	// Handle based on sync/async mode
@@ -135,22 +159,32 @@ func (s *Scheduler) ScheduleExecution(functionID string, input map[string]interf
 }
 
 // ScheduleExecutionByName schedules a function for execution by name
-func (s *Scheduler) ScheduleExecutionByName(functionName string, input map[string]interface{}, sync bool) (*ExecutionResult, error) {
+func (s *Scheduler) ScheduleExecutionByName(functionName string, input map[string]interface{}, sync bool, opts ...JobOptions) (*ExecutionResult, error) {
 	// Validate function exists
 	function, err := s.functionRegistry.GetFunctionByName(functionName)
 	if err != nil {
 		return nil, fmt.Errorf("function not found: %v", err)
 	}
 
+	var opt JobOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
 	// Create execution request
 	requestID := uuid.New().String()
 	request := &ExecutionRequest{
-		FunctionID:   function.ID,
-		FunctionName: functionName,
-		Input:        input,
-		Event:        input, // Use input as event for backward compatibility
-		Sync:         sync,
-		RequestID:    requestID,
+		FunctionID:      function.ID,
+		FunctionName:    functionName,
+		Input:           input,
+		Event:           input,
+		Sync:            sync,
+		RequestID:       requestID,
+		JobType:         opt.JobType,
+		HardwareType:    opt.HardwareType,
+		GPUModel:        opt.GPUModel,
+		DockerImage:     opt.DockerImage,
+		ControlPlaneURL: opt.ControlPlaneURL,
 	}
 
 	// Handle based on sync/async mode
@@ -172,6 +206,17 @@ func (s *Scheduler) ScheduleExecutionByName(functionName string, input map[strin
 			return nil, errors.New("execution queue is full, try again later")
 		}
 	}
+}
+
+// GetActiveExecutionSnapshot returns a thread-safe copy of active executions for monitoring.
+func (s *Scheduler) GetActiveExecutionSnapshot() []*ExecutionContext {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*ExecutionContext, 0, len(s.activeExecutions))
+	for _, ctx := range s.activeExecutions {
+		out = append(out, ctx)
+	}
+	return out
 }
 
 // GetExecutionResult retrieves the result of an asynchronous execution
@@ -234,17 +279,31 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 
 	// Create execution record
 	execution := &state.Execution{
-		ID:         request.RequestID,
-		FunctionID: request.FunctionID,
-		Status:     "pending",
-		StartTime:  time.Now(),
+		ID:           request.RequestID,
+		FunctionID:   request.FunctionID,
+		Status:       "pending",
+		StartTime:    time.Now(),
+		JobType:      request.JobType,
+		HardwareType: request.HardwareType,
+		GPUModel:     request.GPUModel,
 	}
 	if err := s.stateManager.SaveExecution(execution); err != nil {
 		s.logger.Errorf("Failed to save execution record: %v", err)
 	}
 
-	// Allocate a VM for execution
-	vmInstance, err := s.vmManager.GetVM()
+	hwType := request.HardwareType
+	if hwType == "" {
+		hwType = "cpu"
+	}
+	vmInstance, vmErr := s.vmManager.GetCompute(vm.ComputeRequest{
+		HardwareType:    hwType,
+		GPUModel:        request.GPUModel,
+		DockerImage:     request.DockerImage,
+		JobID:           request.RequestID,
+		ExecutionID:     execution.ID,
+		ControlPlaneURL: request.ControlPlaneURL,
+	})
+	err = vmErr
 	if err != nil {
 		execution.Status = "failed"
 		execution.Error = fmt.Sprintf("Failed to allocate VM: %v", err)
@@ -286,6 +345,42 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 		execution.Status = "running"
 		execution.VMID = vmInstance.ID
 		s.stateManager.SaveExecution(execution)
+
+		// GPU training runs autonomously — container calls back when done.
+		// No inbound connection to daemon needed.
+		if request.HardwareType == "gpu" && request.JobType == "training_run" {
+			s.logger.Infof("GPU training job %s dispatched to Akash deployment %s — waiting for completion callback", execution.ID, vmInstance.ID)
+			// Poll execution record for up to 2 hours; container will call /api/executions/{id}/complete
+			deadline := time.Now().Add(2 * time.Hour)
+			for time.Now().Before(deadline) {
+				time.Sleep(15 * time.Second)
+				fresh, err := s.stateManager.GetExecution(execution.ID)
+				if err != nil {
+					continue
+				}
+				if fresh.Status == "completed" || fresh.Status == "failed" {
+					s.logger.Infof("GPU training job %s reached terminal status: %s", execution.ID, fresh.Status)
+					s.releaseVM(vmInstance.ID, request.HardwareType)
+					resultChan <- &ExecutionResult{
+						RequestID:    request.RequestID,
+						FunctionID:   request.FunctionID,
+						StatusCode:   200,
+						Output:       map[string]interface{}{"logs": fresh.Logs},
+						ErrorMessage: fresh.Error,
+						Duration:     fresh.Duration,
+					}
+					return
+				}
+			}
+			// Timeout
+			execution.Status = "failed"
+			execution.Error = "training job timed out after 2 hours"
+			execution.EndTime = time.Now()
+			s.stateManager.SaveExecution(execution)
+			s.releaseVM(vmInstance.ID, request.HardwareType)
+			resultChan <- &ExecutionResult{RequestID: request.RequestID, StatusCode: 504, ErrorMessage: execution.Error}
+			return
+		}
 
 		// Create payload for daemon
 		payload := map[string]interface{}{
@@ -333,10 +428,7 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 			execution.Duration = errorResult.Duration
 			s.stateManager.SaveExecution(execution)
 
-			// Return VM to pool
-			if err := s.vmManager.ReturnVM(vmInstance.ID); err != nil {
-				s.logger.Errorf("Failed to return VM to pool: %v", err)
-			}
+			s.releaseVM(vmInstance.ID, request.HardwareType)
 
 			// Send result to channel
 			resultChan <- errorResult
@@ -348,8 +440,12 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 			Timeout: time.Duration(function.Timeout+5) * time.Second, // Add 5 seconds buffer
 		}
 
-		// Construct daemon URL
-		daemonURL := fmt.Sprintf("http://%s:8081/execute", vmInstance.IP)
+		// Construct daemon URL — use stored DaemonPort for Akash (forwarded), default 8081 for Firecracker
+		daemonPort := vmInstance.DaemonPort
+		if daemonPort == 0 {
+			daemonPort = 8081
+		}
+		daemonURL := fmt.Sprintf("http://%s:%d/execute", vmInstance.IP, daemonPort)
 		s.logger.Infof("Sending execution request to daemon at %s", daemonURL)
 
 		// Send request to daemon
@@ -429,10 +525,7 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 						result.StatusCode = 500
 					}
 
-					// Return VM to pool
-					if err := s.vmManager.ReturnVM(vmInstance.ID); err != nil {
-						s.logger.Errorf("Failed to return VM to pool: %v", err)
-					}
+					s.releaseVM(vmInstance.ID, request.HardwareType)
 
 					// Send result to channel
 					resultChan <- result
@@ -459,10 +552,7 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 			execution.Duration = timeoutResult.Duration
 			s.stateManager.SaveExecution(execution)
 
-			// Return VM to pool
-			if err := s.vmManager.ReturnVM(vmInstance.ID); err != nil {
-				s.logger.Errorf("Failed to return VM to pool: %v", err)
-			}
+			s.releaseVM(vmInstance.ID, request.HardwareType)
 
 			// Send result to channel
 			resultChan <- timeoutResult
@@ -497,6 +587,19 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 	}, nil
 }
 
+// releaseVM returns a CPU VM to the pool or returns a GPU deployment to idle state.
+func (s *Scheduler) releaseVM(vmID, hwType string) {
+	if hwType == "gpu" {
+		if err := s.vmManager.ReturnAkashVM(vmID); err != nil {
+			s.logger.Errorf("Failed to return Akash deployment %s to idle pool: %v", vmID, err)
+		}
+	} else {
+		if err := s.vmManager.ReturnVM(vmID); err != nil {
+			s.logger.Errorf("Failed to return VM %s to pool: %v", vmID, err)
+		}
+	}
+}
+
 // asyncWorker processes asynchronous execution requests
 func (s *Scheduler) asyncWorker() {
 	for request := range s.asyncQueue {
@@ -518,8 +621,13 @@ func (s *Scheduler) monitorExecutions() {
 		s.mu.Lock()
 		now := time.Now()
 		for requestID, context := range s.activeExecutions {
-			// Check if execution has been running for too long (more than 5 minutes)
-			if now.Sub(context.StartTime) > 5*time.Minute {
+			// Check if execution has been running for too long.
+			// GPU training jobs can take hours; skip the short timeout for them.
+			limit := 5 * time.Minute
+			if exec, err := s.stateManager.GetExecution(requestID); err == nil && exec.HardwareType == "gpu" {
+				limit = 4 * time.Hour
+			}
+			if now.Sub(context.StartTime) > limit {
 				s.logger.Warnf("Execution %s has been running for too long, marking as timed out", requestID)
 
 				// Get the execution from the state manager
@@ -536,11 +644,11 @@ func (s *Scheduler) monitorExecutions() {
 				execution.Duration = now.Sub(context.StartTime).Milliseconds()
 				s.stateManager.SaveExecution(execution)
 
-				// Clean up the VM - since terminateVM is unexported, we'll use ReturnVM instead
-				// This isn't ideal but will work until a proper public termination method is available
-				if err := s.vmManager.ReturnVM(context.VMID); err != nil {
-					s.logger.Errorf("Failed to clean up VM %s: %v", context.VMID, err)
+				hw := execution.HardwareType
+				if hw == "" {
+					hw = "cpu"
 				}
+				s.releaseVM(context.VMID, hw)
 
 				// Remove from active executions
 				delete(s.activeExecutions, requestID)

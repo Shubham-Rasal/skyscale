@@ -1,0 +1,8 @@
+numpy<2
+stable-baselines3==2.3.2
+gymnasium==0.29.1
+pynvml==11.5.0
+requests==2.31.0
+flask==3.0.3
+torch==2.1.0+cu121
+--extra-index-url https://download.pytorch.org/whl/cu121

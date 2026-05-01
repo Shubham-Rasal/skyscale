@@ -12,6 +12,7 @@ import (
 
 	"github.com/bluequbit/faas/control-plane/api"
 	"github.com/bluequbit/faas/control-plane/auth"
+	"github.com/bluequbit/faas/control-plane/deployment"
 	"github.com/bluequbit/faas/control-plane/registry"
 	"github.com/bluequbit/faas/control-plane/sandbox"
 	"github.com/bluequbit/faas/control-plane/scheduler"
@@ -78,9 +79,28 @@ func main() {
 	router := mux.NewRouter()
 	AttachProfiler(router)
 
+	publicBase := os.Getenv("SKYSCALE_PUBLIC_BASE")
+	if publicBase == "" {
+		publicBase = "http://127.0.0.1:8080"
+	}
+	deployManager := deployment.NewManager(vmManager, stateManager, publicBase, logger)
+	deployHandler := api.NewDeploymentHandler(deployManager, logger)
+	router.HandleFunc("/api/deployments", deployHandler.CreateDeployment).Methods("POST")
+	router.HandleFunc("/api/deployments", deployHandler.ListDeployments).Methods("GET")
+	router.PathPrefix("/proxy/").Handler(http.HandlerFunc(deployManager.ProxyRequest))
+
+	// CORS is handled at the http.Server level (see corsHandler below) so that
+	// OPTIONS preflight requests are answered even when no route is registered.
+
 	// Register API routes
 	apiHandler := api.NewAPIHandler(functionRegistry, vmManager, functionScheduler, authManager, stateManager, logger)
 	apiHandler.RegisterRoutes(router)
+
+	// WebSocket + new REST endpoints
+	wsHandler := api.NewWSHandler(apiHandler, logger)
+	router.Handle("/api/ws/executions", wsHandler)
+	router.HandleFunc("/api/metrics/gpu", apiHandler.GPUMetricsHandler).Methods("GET")
+	router.HandleFunc("/api/training/metrics", apiHandler.TrainingMetricsHandler).Methods("POST")
 
 	// Register sandbox API routes
 	sandboxManager := sandbox.NewSandboxManager(vmManager, stateManager, logger)
@@ -107,10 +127,21 @@ func main() {
 
 	}
 
+	corsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		router.ServeHTTP(w, r)
+	})
+
 	// Start HTTP server
 	srv := &http.Server{
 		Addr:         ":8080",
-		Handler:      router,
+		Handler:      corsHandler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 300 * time.Second, // sandbox execs can run up to 5 minutes
 		IdleTimeout:  120 * time.Second,
