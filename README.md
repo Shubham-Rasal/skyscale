@@ -1,19 +1,28 @@
 # Skyscale
-A serverless platform and AI agent sandbox built on Firecracker microVMs
+
+**Serverless compute and GPU.** Run code and models without managing servers: CPU workloads on Firecracker microVMs, GPU workloads on decentralized GPU (Akash), plus FaaS invocations, persistent sandboxes for agents, and Modal-style Python apps with HTTP endpoints.
 
 ## Overview
 
-Skyscale is a serverless platform that enables you to run functions in the cloud without managing infrastructure. The platform handles the provisioning, scaling, and management of the underlying compute resources, allowing you to focus solely on writing your code.
+Skyscale is a **serverless compute platform** with a **GPU path** for training, inference, and long-running services. You ship functions or container-backed apps; the control plane provisions **CPU** isolation (Firecracker) or **GPU** capacity (Akash), routes traffic, and tracks state so you focus on code—not clusters or schedulers.
 
-The core of Skyscale is the Lambda-style function — code that is executed in isolated micro-VMs powered by Firecracker, triggered by events or direct invocation.
+At the core is **Lambda-style FaaS**: functions run in isolated micro-VMs, triggered by HTTP or events, with optional async execution and warm pools for lower cold starts.
 
-On top of the FaaS layer, Skyscale now provides a **Sandbox API** designed for AI agents: create a persistent, isolated environment, run arbitrary code across multiple calls, read and write files, and destroy the environment when done — all backed by the same Firecracker VM isolation.
+For **GPU**, the same control plane can schedule heavy jobs (e.g. training) and **deployed web workloads** (inference, APIs) onto GPU-backed environments, while **CPU** stays the default for lightweight and bursty work.
 
-It also exposes a **Python App SDK** (Modal-inspired) so you declare `App`, `Image`, and web routes with decorators; the control plane provisions CPU (Firecracker) or GPU (Akash) workloads, the in-VM daemon runs a **persistent FastAPI + uvicorn** server (`/serve`), and traffic hits your code through **`/proxy/{slug}{path}`**.
+The **Sandbox API** targets **AI agents**: persistent sessions, multi-step exec, and file I/O in isolated environments—same isolation model, different ergonomics.
+
+The **Python App SDK** (`skyscale`) lets you declare `App`, `Image`, and decorators for HTTP routes; deployments get a **persistent FastAPI + uvicorn** process (`/serve` on the daemon) and public URLs under **`/proxy/{slug}{path}`**—on CPU or GPU, depending on how you declare hardware in code.
 
 ![Architecture Diagram](arch.png)
 
 ## Features
+
+### Platform: serverless CPU and GPU
+- **CPU compute** — Firecracker microVMs per invocation or session: strong isolation, predictable serverless semantics
+- **GPU compute** — route eligible workloads to GPU providers (e.g. Akash) for training and inference-class services
+- **Unified control plane** — one API and scheduler story for FaaS jobs, sandboxes, and App deployments
+- **No server management** — you register code or deploy apps; Skyscale maps them to the right hardware class
 
 ### FaaS (Serverless Functions)
 - **Python Function Support**: Lambda-style functions with AWS Lambda-compatible `event`/`context` interface
@@ -23,7 +32,7 @@ It also exposes a **Python App SDK** (Modal-inspired) so you declare `App`, `Ima
 - **Async Execution**: Fire-and-forget invocations with result polling
 - **State Persistence**: SQLite for function metadata and execution history
 
-### Sandbox API (AI Agents)
+### Sandbox API (AI agents on serverless compute)
 - **Persistent Sessions**: A sandbox is a long-lived VM exclusively held for one agent session
 - **Multi-language Execution**: Run Python 3 or Bash code synchronously
 - **Persistent Filesystem**: Files written in one exec call are available in the next
@@ -31,7 +40,7 @@ It also exposes a **Python App SDK** (Modal-inspired) so you declare `App`, `Ima
 - **TTL-based Cleanup**: Sandboxes auto-expire and their VMs are reclaimed
 - **Python SDK**: `SandboxClient` with context-manager support for easy agent integration
 
-### Python App SDK (web endpoints on durable workloads)
+### Python App SDK (HTTP on durable CPU or GPU workloads)
 - **`skyscale` package**: `App`, `Image.pip_install(...)`, `@app.function` / `@app.cls`, `@skyscale.web_endpoint`, `@skyscale.enter`
 - **Deployments API**: `POST /api/deployments` with a JSON spec (per web route); response includes a public **`url`**
 - **Routing**: `GET`/`POST` `/proxy/{slug}{path}` reverse-proxies to the workload (CPU or GPU)
@@ -39,6 +48,8 @@ It also exposes a **Python App SDK** (Modal-inspired) so you declare `App`, `Ima
 - **Environment**: set `SKYSCALE_PUBLIC_BASE` (e.g. `http://api.example.com:8080`) so returned URLs are correct; `SKYSCALE_SDK_PYTHON` points the CLI at the repo’s `sdk/python` if auto-detection fails
 
 ## Architecture
+
+Serverless workloads flow from clients and SDKs through the control plane to **CPU VMs (Firecracker)** or **GPU deployments (Akash)**, depending on hardware selection.
 
 ```
 AI Agent / SDK
@@ -50,10 +61,10 @@ Sandbox HTTP API   (/api/sandboxes/*)
 SandboxManager     (control-plane/sandbox/)
      |
      v
-VMManager          (control-plane/vm/)
+VMManager          (control-plane/vm/)  — CPU pool + GPU (Akash)
      |
      v
-Firecracker VM
+Firecracker VM  |  GPU host (Akash)
      |
 In-VM Daemon       (cmd/daemon/) — FaaS `/execute`, `/serve` (FastAPI), sandbox exec, file I/O
 ```
@@ -62,16 +73,17 @@ In-VM Daemon       (cmd/daemon/) — FaaS `/execute`, `/serve` (FastAPI), sandbo
 
 **Control Plane**
 - **Function Registry** — function metadata, code, configurations
-- **VM Manager** — Firecracker VM lifecycle and warm pool
-- **Scheduler** — dispatches FaaS invocations to VMs
+- **VM Manager** — Firecracker VM lifecycle and warm pool; GPU provisioning via Akash when requested
+- **Scheduler** — dispatches invocations to CPU VMs or GPU backends (e.g. Akash) per job options
 - **Sandbox Manager** — creates/manages long-lived sandbox sessions
 - **State Manager** — SQLite state for functions, executions, VMs, sandboxes
 - **API Server** — REST API (FaaS + Sandbox + Deployments)
 - **Deployment manager** — long-lived web routes, proxy to workloads (`control-plane/deployment/`)
 - **Auth Service** — API key management
 
-**Execution Environment**
-- **Firecracker Micro-VMs** — hardware-level isolation (separate kernel per VM)
+**Execution environment**
+- **Firecracker micro-VMs (CPU)** — hardware-level isolation for serverless function and sandbox workloads
+- **GPU hosts (Akash)** — for training and GPU-class App deployments when hardware selects GPU
 - **In-VM Daemon (Go)** — FaaS execution, `/serve` for deployed apps (uvicorn), sandbox sync exec
 - **Persistent Workspace** — `/sandbox/workspace` inside each VM, persists across exec calls
 - **CNI Networking** — ptp + tc-redirect-tap, VMs on 192.168.1.0/24
@@ -82,7 +94,8 @@ In-VM Daemon       (cmd/daemon/) — FaaS `/execute`, `/serve` (FastAPI), sandbo
 ## Getting Started
 
 ### Prerequisites
-- Linux (required for Firecracker + KVM)
+- Linux (required for Firecracker + KVM on the control plane host)
+- GPU-related features (Akash) need a configured Akash wallet / provider path as in your deployment setup
 - Go 1.21+
 - Python 3.8+ (for SDK and function runtime)
 - Firecracker binary at `/usr/local/bin/firecracker`
