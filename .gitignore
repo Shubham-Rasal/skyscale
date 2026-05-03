@@ -73,6 +73,10 @@ control-plane/vm-storage/
 vendor/
 node_modules/
 
+# Python
+**/__pycache__/
+*.py[cod]
+
 # OS specific
 .DS_Store
 Thumbs.db

@@ -9,6 +9,8 @@ The core of Skyscale is the Lambda-style function — code that is executed in i
 
 On top of the FaaS layer, Skyscale now provides a **Sandbox API** designed for AI agents: create a persistent, isolated environment, run arbitrary code across multiple calls, read and write files, and destroy the environment when done — all backed by the same Firecracker VM isolation.
 
+It also exposes a **Python App SDK** (Modal-inspired) so you declare `App`, `Image`, and web routes with decorators; the control plane provisions CPU (Firecracker) or GPU (Akash) workloads, the in-VM daemon runs a **persistent FastAPI + uvicorn** server (`/serve`), and traffic hits your code through **`/proxy/{slug}{path}`**.
+
 ![Architecture Diagram](arch.png)
 
 ## Features
@@ -29,6 +31,13 @@ On top of the FaaS layer, Skyscale now provides a **Sandbox API** designed for A
 - **TTL-based Cleanup**: Sandboxes auto-expire and their VMs are reclaimed
 - **Python SDK**: `SandboxClient` with context-manager support for easy agent integration
 
+### Python App SDK (web endpoints on durable workloads)
+- **`skyscale` package**: `App`, `Image.pip_install(...)`, `@app.function` / `@app.cls`, `@skyscale.web_endpoint`, `@skyscale.enter`
+- **Deployments API**: `POST /api/deployments` with a JSON spec (per web route); response includes a public **`url`**
+- **Routing**: `GET`/`POST` `/proxy/{slug}{path}` reverse-proxies to the workload (CPU or GPU)
+- **CLI**: `skyscale deploy myapp.py` introspects the file and posts specs; `skyscale deploy myfunc/` still registers a classic FaaS function from `handler.py`
+- **Environment**: set `SKYSCALE_PUBLIC_BASE` (e.g. `http://api.example.com:8080`) so returned URLs are correct; `SKYSCALE_SDK_PYTHON` points the CLI at the repo’s `sdk/python` if auto-detection fails
+
 ## Architecture
 
 ```
@@ -46,7 +55,7 @@ VMManager          (control-plane/vm/)
      v
 Firecracker VM
      |
-In-VM Daemon       (cmd/daemon/) — sync exec + file I/O + legacy FaaS handler
+In-VM Daemon       (cmd/daemon/) — FaaS `/execute`, `/serve` (FastAPI), sandbox exec, file I/O
 ```
 
 ### Components
@@ -57,17 +66,18 @@ In-VM Daemon       (cmd/daemon/) — sync exec + file I/O + legacy FaaS handler
 - **Scheduler** — dispatches FaaS invocations to VMs
 - **Sandbox Manager** — creates/manages long-lived sandbox sessions
 - **State Manager** — SQLite state for functions, executions, VMs, sandboxes
-- **API Server** — REST API (FaaS + Sandbox)
+- **API Server** — REST API (FaaS + Sandbox + Deployments)
+- **Deployment manager** — long-lived web routes, proxy to workloads (`control-plane/deployment/`)
 - **Auth Service** — API key management
 
 **Execution Environment**
 - **Firecracker Micro-VMs** — hardware-level isolation (separate kernel per VM)
-- **In-VM Daemon (Go)** — handles both FaaS execution callbacks and sandbox sync exec
+- **In-VM Daemon (Go)** — FaaS execution, `/serve` for deployed apps (uvicorn), sandbox sync exec
 - **Persistent Workspace** — `/sandbox/workspace` inside each VM, persists across exec calls
 - **CNI Networking** — ptp + tc-redirect-tap, VMs on 192.168.1.0/24
 
 **SDK**
-- **Python SDK** — `sdk/python/skyscale_sandbox`
+- **Python** — `skyscale_sandbox` (Sandbox API client), `skyscale` (App / deploy DSL + `skyscale._deploy` spec emission)
 
 ## Getting Started
 
@@ -81,15 +91,18 @@ In-VM Daemon       (cmd/daemon/) — sync exec + file I/O + legacy FaaS handler
 ### Build
 
 ```bash
-# Control plane
+# Control plane (needs Linux or cross-compile targets that match your Firecracker hosts)
 cd control-plane
-go build -o skyscale-cp .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o skyscale-cp .
 
-# In-VM daemon (cross-compile for Linux)
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o skyscale-daemon ./cmd/daemon/
+# In-VM daemon (paths are relative to the repo root)
+cd ../cmd/daemon
+go build -o skyscale-daemon .
+# Optional: static Linux binary for VM images
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o skyscale-daemon-linux .
 
 # CLI
-cd cmd/cli
+cd ../cli
 go build -o skyscale .
 ```
 
@@ -113,6 +126,43 @@ JWT_SECRET=your-secret
 ```bash
 ./skyscale-cp
 ```
+
+---
+
+## App deployments (Modal-style)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/deployments` | Create one **App** deployment (one web route per POST body) |
+| `GET` | `/api/deployments` | List deployments |
+| * | `/proxy/{slug}{path}` | Reverse-proxy to the workload backing that deployment |
+
+Set `SKYSCALE_PUBLIC_BASE` on the control plane so deployment responses use the correct origin.
+
+Minimal example (`examples/skyscale_web_app.py`):
+
+Emit deployment JSON (inspect only):
+
+```bash
+pip install -e sdk/python   # installs skyscale + skyscale_sandbox
+PYTHONPATH=sdk/python python3 -m skyscale._deploy examples/skyscale_web_app.py | jq .
+```
+
+Deploy with the CLI (control plane must be running; needs Linux + Firecracker for CPU VMs unless you use your own integration):
+
+```bash
+skyscale --api-url http://localhost:8080 deploy examples/skyscale_web_app.py
+```
+
+Call the returned URL, e.g.:
+
+```bash
+curl -s -X POST 'http://localhost:8080/proxy/demo-web--process/process' \
+  -H 'Content-Type: application/json' \
+  -d '{"data":{"a":[1,2,3],"b":[3,2,1]}}'
+```
+
+**Local daemon-only check (no Firecracker)** — useful on macOS: build `cmd/daemon`, run it on `:8081`, then `POST /serve` with the JSON from `skyscale._deploy` and hit the uvicorn port directly to validate FastAPI wiring.
 
 ---
 
@@ -154,6 +204,8 @@ curl -X POST localhost:8080/api/functions/name/greet/invoke \
 | `POST` | `/api/sandboxes/{id}/files/{path}` | Upload a file |
 | `GET` | `/api/sandboxes/{id}/files/{path}` | Download a file |
 
+Deploy (Python App DSL) endpoints live under **Deployments** alongside the **`/proxy/...`** route — see **App deployments (Modal-style)** above.
+
 ### Quick start (curl)
 
 ```bash
@@ -185,11 +237,13 @@ curl localhost:8080/api/sandboxes/$SB/files/output.csv -o output.csv
 curl -X DELETE localhost:8080/api/sandboxes/$SB
 ```
 
-### Python SDK
+### Python SDKs
 
 ```bash
 pip install -e sdk/python
 ```
+
+#### Sandbox (`skyscale_sandbox`)
 
 ```python
 from skyscale_sandbox import SandboxClient
@@ -212,6 +266,21 @@ with client.create(runtime="python3", ttl=600) as sb:
     print(r.stdout)
 
     output = sb.download_file("result.json")
+```
+
+#### App DSL (`skyscale`)
+
+```python
+import skyscale
+
+app = skyscale.App("demo")
+image = skyscale.Image.pip_install("pandas")
+
+@app.function(image=image)
+@skyscale.web_endpoint(method="POST", path="/process")
+def process(data: dict) -> dict:
+    import pandas as pd
+    return {"result": pd.DataFrame(data).describe().to_dict()}
 ```
 
 ---
@@ -260,10 +329,11 @@ E2E tests cover: full sandbox lifecycle, file persistence, VM isolation between 
 │   ├── registry/     # Function registry
 │   ├── sandbox/      # Sandbox manager
 │   ├── scheduler/    # FaaS execution scheduler
+│   ├── deployment/   # Long-lived deployments + proxy
 │   ├── state/        # SQLite state (functions, executions, VMs, sandboxes)
 │   └── vm/           # Firecracker VM lifecycle + warm pool
 ├── sdk/
-│   └── python/       # Python SDK (skyscale_sandbox)
+│   └── python/       # skyscale (App/deploy), skyscale_sandbox (Sandbox client)
 ├── tests/
 │   └── e2e/          # Integration tests (build tag: integration)
 ├── examples/         # Example functions
@@ -276,6 +346,8 @@ E2E tests cover: full sandbox lifecycle, file persistence, VM isolation between 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `SKYSCALE_PUBLIC_BASE` | — | Origin for deployment URLs (`http(s)://host:port`, no trailing slash) |
+| `SKYSCALE_SDK_PYTHON` | — | Absolute path to `sdk/python` for `skyscale deploy` when not run from the repo |
 | `PORT` | `8080` | Control plane HTTP port |
 | `DB_PATH` | `skyscale.db` | SQLite database path |
 | `FAAS_VM_KERNEL_PATH` | — | Path to Firecracker kernel image |
