@@ -120,6 +120,17 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	executions.HandleFunc("/{id}/complete", h.completeExecutionHandler).Methods("POST")
 	executions.HandleFunc("/function/{id}", h.listExecutionsHandler).Methods("GET")
 
+	// Training metrics routes (no auth — called by containers on Akash)
+	api.HandleFunc("/training/metrics", h.TrainingMetricsHandler).Methods("POST")
+	api.HandleFunc("/training/metrics/{job_id}", h.trainingMetricsGetHandler).Methods("GET")
+
+	// Training job seeding (used by akash-test and scheduler to register jobs)
+	api.HandleFunc("/training/executions", h.seedExecutionHandler).Methods("POST")
+	api.HandleFunc("/training/vms", h.seedVMHandler).Methods("POST")
+
+	// GPU metrics route
+	api.HandleFunc("/metrics/gpu", h.GPUMetricsHandler).Methods("GET")
+
 	// VM routes
 	vms := api.PathPrefix("/vms").Subrouter()
 	vms.HandleFunc("", h.listVMsHandler).Methods("GET")

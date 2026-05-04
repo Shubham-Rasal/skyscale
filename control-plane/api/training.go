@@ -5,7 +5,14 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/bluequbit/faas/control-plane/state"
+	"github.com/gorilla/mux"
 )
+
+// type aliases to avoid import cycle verbosity
+type stateExecution = state.Execution
+type stateVM = state.VM
 
 // TrainingMetric is a single training step metric from a GPU job.
 type TrainingMetric struct {
@@ -74,4 +81,92 @@ func (h *APIHandler) trainingMetricsHandler(w http.ResponseWriter, r *http.Reque
 	}
 	h.trainingMetrics.Push(m)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// trainingMetricsGetHandler returns all metrics for a specific job.
+func (h *APIHandler) trainingMetricsGetHandler(w http.ResponseWriter, r *http.Request) {
+	jobID := mux.Vars(r)["job_id"]
+	snapshot := h.trainingMetrics.Snapshot()
+	metrics, ok := snapshot[jobID]
+	if !ok {
+		metrics = []TrainingMetric{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metrics)
+}
+
+// seedExecutionHandler creates an execution record in state so the dashboard can show it.
+// Called by the akash-test tool (and eventually the scheduler) before dispatching to Akash.
+func (h *APIHandler) seedExecutionHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID           string `json:"id"`
+		JobID        string `json:"job_id"`
+		Status       string `json:"status"`
+		JobType      string `json:"job_type"`
+		HardwareType string `json:"hardware_type"`
+		GPUModel     string `json:"gpu_model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if body.ID == "" {
+		body.ID = body.JobID
+	}
+	if body.Status == "" {
+		body.Status = "running"
+	}
+
+	exec := &stateExecution{
+		ID:           body.ID,
+		FunctionID:   body.JobID,
+		Status:       body.Status,
+		StartTime:    time.Now(),
+		JobType:      body.JobType,
+		HardwareType: body.HardwareType,
+		GPUModel:     body.GPUModel,
+	}
+	if err := h.stateManager.SaveExecution(exec); err != nil {
+		h.logger.Errorf("seedExecution: %v", err)
+		http.Error(w, "failed to save execution", http.StatusInternalServerError)
+		return
+	}
+	h.logger.Infof("Seeded training execution: %s", body.ID)
+	w.WriteHeader(http.StatusCreated)
+}
+
+// seedVMHandler registers an Akash deployment as a GPU VM in state.
+func (h *APIHandler) seedVMHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID                 string `json:"id"`
+		Status             string `json:"status"`
+		HardwareType       string `json:"hardware_type"`
+		GPUModel           string `json:"gpu_model"`
+		Provider           string `json:"provider"`
+		AkashDeploymentID  string `json:"akash_deployment_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if body.Status == "" {
+		body.Status = "busy"
+	}
+
+	vm := &stateVM{
+		ID:                body.ID,
+		Status:            body.Status,
+		HardwareType:      body.HardwareType,
+		GPUModel:          body.GPUModel,
+		ProviderAddr:      body.Provider,
+		AkashDeploymentID: body.AkashDeploymentID,
+		CreatedAt:         time.Now(),
+	}
+	if err := h.stateManager.SaveVM(vm); err != nil {
+		h.logger.Errorf("seedVM: %v", err)
+		http.Error(w, "failed to save vm", http.StatusInternalServerError)
+		return
+	}
+	h.logger.Infof("Seeded GPU VM record: %s", body.ID)
+	w.WriteHeader(http.StatusCreated)
 }

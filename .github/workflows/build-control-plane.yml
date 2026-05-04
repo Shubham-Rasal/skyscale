@@ -1,0 +1,54 @@
+name: Build & Deploy Control Plane
+
+on:
+  push:
+    paths:
+      - "control-plane/**"
+      - ".github/workflows/build-control-plane.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: control-plane/go.sum
+
+      - name: Build Linux binary
+        working-directory: control-plane
+        run: |
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w" \
+            -o skyscale-control-plane-linux \
+            .
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skyscale-control-plane-linux
+          path: control-plane/skyscale-control-plane-linux
+          retention-days: 7
+
+      - name: Deploy to server
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SERVER: ${{ secrets.DEPLOY_SERVER }}
+          SERVER_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "DEPLOY_SSH_KEY secret not set — skipping deploy, binary available as artifact"
+            exit 0
+          fi
+          echo "$DEPLOY_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            control-plane/skyscale-control-plane-linux \
+            "${SERVER_USER}@${SERVER}:/tmp/skyscale-control-plane-linux"
+          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER}" \
+            "sudo mv /tmp/skyscale-control-plane-linux /usr/local/bin/skyscale-control-plane && sudo systemctl restart skyscale-control-plane && echo 'Deploy OK'"
