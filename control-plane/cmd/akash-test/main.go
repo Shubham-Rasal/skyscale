@@ -20,12 +20,12 @@ func main() {
 	}
 
 	sdlData := akash.SDLData{
-		DockerImage:     "shubhamrasal007/skyscale-cartpole:v2",
-		JobID:           "cartpole-test-001",
-		ExecutionID:     "exec-cartpole-001",
+		DockerImage:     "ghcr.io/shubham-rasal/skyscale-mnist:v1",
+		JobID:           "mnist-test-001",
+		ExecutionID:     "exec-mnist-001",
 		ControlPlaneURL: controlPlaneURL,
-		GPUModel:        "rtx3090",
-		EnvVars:         map[string]string{"TOTAL_STEPS": "300", "REPORT_EVERY": "100"},
+		GPUModel:        "a100",
+		EnvVars:         map[string]string{"EPOCHS": "3", "BATCH_SIZE": "512"},
 	}
 
 	sdl, err := client.GenerateTrainingSDL(sdlData)
