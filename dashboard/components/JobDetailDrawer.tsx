@@ -158,22 +158,24 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
                 <Section title="Akash Deployment">
                   <Row label="Deployment (dseq)" value={exec.VMID} mono />
                   <Row label="Status" value={exec.Status === 'error' ? 'Closed' : exec.Status === 'completed' ? 'Closed' : 'Active'} />
-                  <div style={{ marginTop: 8 }}>
-                    <a
-                      href={`https://console.akash.network/deployments/${exec.VMID}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        fontSize: 12, color: 'var(--accent)',
-                        textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4,
-                      }}
-                    >
-                      View on Akash Console
-                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M1 9L9 1M9 1H4M9 1v5"/>
-                      </svg>
-                    </a>
-                  </div>
+                  {/^\d+$/.test(exec.VMID) && (
+                    <div style={{ marginTop: 8 }}>
+                      <a
+                        href={`https://console.akash.network/deployments/${exec.VMID}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          fontSize: 12, color: 'var(--accent)',
+                          textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4,
+                        }}
+                      >
+                        View on Akash Console
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M1 9L9 1M9 1H4M9 1v5"/>
+                        </svg>
+                      </a>
+                    </div>
+                  )}
                 </Section>
               )}
 
@@ -215,7 +217,7 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
                     const isRunning = exec.Status === 'running'
                     const isDone = exec.Status === 'completed'
                     const isFailed = exec.Status === 'failed' || exec.Status === 'error'
-                    const hasDseq = !!(exec.HardwareType === 'gpu' && exec.VMID)
+                    const hasDseq = !!(exec.HardwareType === 'gpu' && exec.VMID && /^\d+$/.test(exec.VMID))
                     return (
                       <>
                         <CheckItem ok={hasDseq} pending={!hasDseq && isPending} text="Deployment created on Akash (dseq present)" />
