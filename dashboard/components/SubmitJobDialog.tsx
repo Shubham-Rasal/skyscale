@@ -108,18 +108,29 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
       setError('Input must be valid JSON')
       return
     }
-    if (!fields.functionName) { setError('Function name is required'); return }
+    if (!fields.functionName && fields.hardwareType !== 'gpu') { setError('Function name is required'); return }
     setSubmitting(true)
     try {
-      await api.invoke(fields.functionName, {
-        input,
-        sync: false,
-        job_type: fields.jobType,
-        hardware_type: fields.hardwareType,
-        gpu_model: fields.gpuModel || undefined,
-        docker_image: fields.dockerImage || undefined,
-        control_plane_url: fields.controlPlaneURL || undefined,
-      })
+      if (fields.hardwareType === 'gpu' && fields.jobType === 'training_run') {
+        // GPU training jobs go directly to the Akash deployment path
+        await api.submitTrainingJob({
+          job_id: fields.functionName,
+          docker_image: fields.dockerImage,
+          gpu_model: fields.gpuModel || 'a100',
+          env_vars: Object.fromEntries(
+            Object.entries(input as Record<string, unknown>)
+              .map(([k, v]) => [k.toUpperCase(), String(v)])
+          ),
+        })
+      } else {
+        if (!fields.functionName) { setError('Function name is required'); setSubmitting(false); return }
+        await api.invoke(fields.functionName, {
+          input,
+          sync: false,
+          job_type: fields.jobType,
+          hardware_type: fields.hardwareType,
+        })
+      }
       onSubmitted?.()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Request failed')

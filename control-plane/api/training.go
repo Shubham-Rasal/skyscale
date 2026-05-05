@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/bluequbit/faas/control-plane/akash"
 	"github.com/bluequbit/faas/control-plane/state"
 	"github.com/gorilla/mux"
 )
@@ -13,6 +15,7 @@ import (
 // type aliases to avoid import cycle verbosity
 type stateExecution = state.Execution
 type stateVM = state.VM
+type akashSDLData = akash.SDLData
 
 // TrainingMetric is a single training step metric from a GPU job.
 type TrainingMetric struct {
@@ -95,6 +98,115 @@ func (h *APIHandler) trainingMetricsGetHandler(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(metrics)
 }
 
+// submitTrainingJobHandler accepts a job submission from the dashboard, deploys to Akash,
+// and returns the execution ID immediately. The container calls back when done.
+func (h *APIHandler) submitTrainingJobHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		JobID       string            `json:"job_id"`
+		DockerImage string            `json:"docker_image"`
+		GPUModel    string            `json:"gpu_model"`
+		EnvVars     map[string]string `json:"env_vars"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if body.DockerImage == "" {
+		http.Error(w, "docker_image required", http.StatusBadRequest)
+		return
+	}
+	if body.JobID == "" {
+		body.JobID = "job-" + fmt.Sprintf("%d", time.Now().UnixMilli())
+	}
+	if body.GPUModel == "" {
+		body.GPUModel = "a100"
+	}
+
+	executionID := "exec-" + body.JobID
+	controlPlaneURL := r.Header.Get("X-Control-Plane-URL")
+	if controlPlaneURL == "" {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		controlPlaneURL = scheme + "://" + r.Host
+	}
+
+	// Seed execution record immediately so dashboard shows "running"
+	exec := &stateExecution{
+		ID:           executionID,
+		FunctionID:   body.JobID,
+		Status:       "running",
+		StartTime:    time.Now(),
+		JobType:      "training_run",
+		HardwareType: "gpu",
+		GPUModel:     body.GPUModel,
+	}
+	if err := h.stateManager.SaveExecution(exec); err != nil {
+		h.logger.Errorf("submitTrainingJob: seed execution: %v", err)
+	}
+
+	// Deploy to Akash asynchronously
+	go func() {
+		sdlData := akashSDLData{
+			DockerImage:     body.DockerImage,
+			JobID:           body.JobID,
+			ExecutionID:     executionID,
+			ControlPlaneURL: controlPlaneURL,
+			GPUModel:        body.GPUModel,
+			EnvVars:         body.EnvVars,
+		}
+		sdl, err := h.akashClient.GenerateTrainingSDL(sdlData)
+		if err != nil {
+			h.logger.Errorf("submitTrainingJob: generate SDL: %v", err)
+			h.markExecutionFailed(executionID, "failed to generate SDL: "+err.Error())
+			return
+		}
+		deployment, err := h.akashClient.CreateDeployment(sdl, body.JobID)
+		if err != nil {
+			h.logger.Errorf("submitTrainingJob: create deployment: %v", err)
+			h.markExecutionFailed(executionID, err.Error())
+			return
+		}
+		h.logger.Infof("submitTrainingJob: deployment created dseq=%s", deployment.ID)
+
+		// Update execution with dseq so UI checks go green
+		exec.VMID = deployment.ID
+		h.stateManager.SaveExecution(exec)
+
+		// Register VM for GPU metrics
+		vm := &stateVM{
+			ID:                deployment.ID,
+			Status:            "busy",
+			HardwareType:      "gpu",
+			GPUModel:          body.GPUModel,
+			ProviderAddr:      deployment.ProviderAddr,
+			AkashDeploymentID: deployment.ID,
+			CreatedAt:         time.Now(),
+		}
+		h.stateManager.SaveVM(vm)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"execution_id": executionID,
+		"job_id":       body.JobID,
+		"status":       "running",
+	})
+}
+
+func (h *APIHandler) markExecutionFailed(executionID, errMsg string) {
+	exec, err := h.stateManager.GetExecution(executionID)
+	if err != nil {
+		return
+	}
+	exec.Status = "error"
+	exec.Error = errMsg
+	exec.EndTime = time.Now()
+	h.stateManager.SaveExecution(exec)
+}
+
 // seedExecutionHandler creates an execution record in state so the dashboard can show it.
 // Called by the akash-test tool (and eventually the scheduler) before dispatching to Akash.
 func (h *APIHandler) seedExecutionHandler(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +217,7 @@ func (h *APIHandler) seedExecutionHandler(w http.ResponseWriter, r *http.Request
 		JobType      string `json:"job_type"`
 		HardwareType string `json:"hardware_type"`
 		GPUModel     string `json:"gpu_model"`
+		VMID         string `json:"vm_id"` // Akash dseq — drives the "dseq present" check
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -125,6 +238,7 @@ func (h *APIHandler) seedExecutionHandler(w http.ResponseWriter, r *http.Request
 		JobType:      body.JobType,
 		HardwareType: body.HardwareType,
 		GPUModel:     body.GPUModel,
+		VMID:         body.VMID,
 	}
 	if err := h.stateManager.SaveExecution(exec); err != nil {
 		h.logger.Errorf("seedExecution: %v", err)

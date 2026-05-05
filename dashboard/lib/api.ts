@@ -1,5 +1,11 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
 
+async function parseResponse(r: Response) {
+  const text = await r.text()
+  if (!r.ok) throw new Error(text.trim() || `HTTP ${r.status}`)
+  try { return JSON.parse(text) } catch { return text }
+}
+
 export const api = {
   listFunctions: () =>
     fetch(`${BASE}/api/functions`).then(r => r.json()),
@@ -9,7 +15,14 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).then(r => r.json()),
+    }).then(parseResponse),
+
+  submitTrainingJob: (body: Record<string, unknown>) =>
+    fetch(`${BASE}/api/training/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(parseResponse),
 
   listVMs: () =>
     fetch(`${BASE}/api/vms`).then(r => r.json()),

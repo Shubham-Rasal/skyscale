@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 	_ "net/http/pprof"
+	"github.com/bluequbit/faas/control-plane/akash"
 	"github.com/bluequbit/faas/control-plane/auth"
 	"github.com/bluequbit/faas/control-plane/registry"
 	"github.com/bluequbit/faas/control-plane/scheduler"
@@ -22,6 +23,7 @@ type APIHandler struct {
 	authManager      *auth.AuthManager
 	stateManager     *state.StateManager
 	trainingMetrics  *TrainingMetricsStore
+	akashClient      *akash.Client
 	logger           *logrus.Logger
 }
 
@@ -82,6 +84,7 @@ func NewAPIHandler(functionRegistry *registry.FunctionRegistry, vmManager *vm.VM
 		authManager:      authManager,
 		stateManager:     stateManager,
 		trainingMetrics:  NewTrainingMetricsStore(),
+		akashClient:      akash.NewClient(logger),
 		logger:           logger,
 	}
 }
@@ -123,6 +126,9 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	// Training metrics routes (no auth — called by containers on Akash)
 	api.HandleFunc("/training/metrics", h.TrainingMetricsHandler).Methods("POST")
 	api.HandleFunc("/training/metrics/{job_id}", h.trainingMetricsGetHandler).Methods("GET")
+
+	// Submit a training job directly to Akash from the dashboard
+	api.HandleFunc("/training/jobs", h.submitTrainingJobHandler).Methods("POST")
 
 	// Training job seeding (used by akash-test and scheduler to register jobs)
 	api.HandleFunc("/training/executions", h.seedExecutionHandler).Methods("POST")
