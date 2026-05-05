@@ -6,6 +6,18 @@ import { api } from '@/lib/api'
 
 const TEMPLATES = [
   {
+    label: 'MNIST CNN',
+    defaults: {
+      functionName: 'mnist-trainer',
+      jobType: 'training_run',
+      hardwareType: 'gpu',
+      gpuModel: 'a100',
+      dockerImage: 'ghcr.io/shubham-rasal/skyscale-mnist:v1',
+      controlPlaneURL: 'http://n8n.maximalstudio.in:8080',
+      input: JSON.stringify({ epochs: 3, batch_size: 512 }, null, 2),
+    },
+  },
+  {
     label: 'CartPole GPU',
     defaults: {
       functionName: 'cartpole-trainer',
@@ -48,6 +60,7 @@ interface Props {
   onOpenChange?: (o: boolean) => void
   onSubmitted?: () => void
   trigger?: React.ReactNode
+  initialTemplate?: string // label of a TEMPLATES entry to pre-select
 }
 
 const field: React.CSSProperties = {
@@ -71,9 +84,10 @@ const label: React.CSSProperties = {
   fontWeight: 500,
 }
 
-export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger }: Props) {
-  const [tplIdx, setTplIdx] = useState(0)
-  const [fields, setFields] = useState(TEMPLATES[0].defaults)
+export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, initialTemplate }: Props) {
+  const initIdx = initialTemplate ? Math.max(0, TEMPLATES.findIndex(t => t.label === initialTemplate)) : 0
+  const [tplIdx, setTplIdx] = useState(initIdx)
+  const [fields, setFields] = useState(TEMPLATES[initIdx].defaults)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 

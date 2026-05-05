@@ -6,7 +6,22 @@ import { SubmitJobDialog } from '@/components/SubmitJobDialog'
 
 const TEMPLATES = [
   {
+    name: 'MNIST CNN',
+    dialogLabel: 'MNIST CNN',
+    description: 'Trains a 3-layer CNN on MNIST using PyTorch + CUDA on an A100. Streams loss, accuracy, and GPU utilisation back to the dashboard every 50 batches.',
+    tag: 'GPU · Akash',
+    tagColor: 'var(--accent)',
+    tagBg: 'var(--accent-dim)',
+    hardware: 'gpu',
+    gpuModel: 'a100',
+    jobType: 'training_run',
+    dockerImage: 'ghcr.io/shubham-rasal/skyscale-mnist:v1',
+    input: { epochs: 3, batch_size: 512 },
+    badge: 'Image Classification',
+  },
+  {
     name: 'CartPole PPO',
+    dialogLabel: 'CartPole GPU',
     description: 'Trains a PPO agent on CartPole-v1 with stable-baselines3. Streams live reward/loss curves back to the dashboard.',
     tag: 'GPU · Akash',
     tagColor: 'var(--accent)',
@@ -20,6 +35,7 @@ const TEMPLATES = [
   },
   {
     name: 'CPU FaaS Function',
+    dialogLabel: 'CPU FaaS',
     description: 'Run any serverless function on a Firecracker microVM. Fast cold starts, isolated execution, auto-cleanup.',
     tag: 'CPU · Firecracker',
     tagColor: 'var(--text-secondary)',
@@ -33,6 +49,7 @@ const TEMPLATES = [
   },
   {
     name: 'RL Environment',
+    dialogLabel: 'Custom',
     description: 'Host a gymnasium-compatible RL environment on Akash GPU compute, accepting remote agent connections.',
     tag: 'GPU · Akash',
     tagColor: 'var(--accent)',
@@ -47,11 +64,11 @@ const TEMPLATES = [
 ]
 
 export default function TemplatesPage() {
-  const [selected, setSelected] = useState<typeof TEMPLATES[0] | null>(null)
+  const [selectedLabel, setSelectedLabel] = useState<string | undefined>(undefined)
   const [dialogOpen, setDialogOpen] = useState(false)
 
   function launch(tpl: typeof TEMPLATES[0]) {
-    setSelected(tpl)
+    setSelectedLabel(tpl.dialogLabel)
     setDialogOpen(true)
   }
 
@@ -136,13 +153,12 @@ export default function TemplatesPage() {
         </div>
       </div>
 
-      {selected && (
-        <SubmitJobDialog
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-          onSubmitted={() => setDialogOpen(false)}
-        />
-      )}
+      <SubmitJobDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onSubmitted={() => setDialogOpen(false)}
+        initialTemplate={selectedLabel}
+      />
     </div>
   )
 }
