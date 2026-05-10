@@ -4,7 +4,6 @@ import { useRealtimeStream } from '@/hooks/useRealtimeStream'
 import { Sidebar } from '@/components/Sidebar'
 import { GPUMetrics } from '@/components/GPUMetrics'
 import { ProviderPool } from '@/components/ProviderPool'
-import { Zap, Server, Activity } from 'lucide-react'
 
 export default function GPUsPage() {
   const { data, connected } = useRealtimeStream()
@@ -17,74 +16,94 @@ export default function GPUsPage() {
       <Sidebar connected={connected} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+        {/* Top bar */}
         <div style={{
-          height: 52,
+          height: 56,
           borderBottom: '1px solid var(--border)',
           display: 'flex', alignItems: 'center',
-          padding: '0 24px', gap: 12, flexShrink: 0,
+          padding: '0 24px', gap: 10, flexShrink: 0,
         }}>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
             <h1 style={{
               fontFamily: 'var(--font-grotesk), sans-serif',
               fontSize: 15, fontWeight: 600,
-              color: 'var(--text-primary)', letterSpacing: '-0.01em',
+              color: 'var(--text-primary)', letterSpacing: '-0.02em',
             }}>
               On-Demand GPUs
             </h1>
             <span style={{
-              fontSize: 10,
-              fontWeight: 600,
-              padding: '2px 6px',
-              borderRadius: 4,
+              fontSize: 10, fontWeight: 600,
+              padding: '2px 6px', borderRadius: 4,
               background: 'var(--accent-dim)',
               color: 'var(--accent)',
-              letterSpacing: '0.04em',
+              letterSpacing: '0.06em',
+              border: '1px solid var(--accent-border)',
             }}>
               BETA
             </span>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <StatPill label="Active Jobs" value={activeJobs} color="var(--accent)" />
-            <StatPill label="GPU Nodes" value={activeGPU} color="#f59e0b" />
-            <StatPill label="Total VMs" value={data.vm_pool.length} color="#22c55e" />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <StatPill label="Active Jobs" value={activeJobs} color="var(--accent)" dimColor="var(--accent-dim)" />
+            <StatPill label="GPU Nodes" value={activeGPU} color="var(--warning)" dimColor="rgba(245,158,11,0.1)" />
+            <StatPill label="Total VMs" value={data.vm_pool.length} color="var(--success)" dimColor="var(--success-dim)" />
           </div>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
           {activeJobs > 0 && (
-            <div style={{ background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', padding: 20 }}>
-              <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 16, letterSpacing: '0.04em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Activity size={12} /> Live Utilization
-              </div>
+            <Panel label="Live Utilization">
               <GPUMetrics metrics={data.gpu} />
-            </div>
+            </Panel>
           )}
 
-          <div style={{ background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', padding: 20 }}>
-            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 16, letterSpacing: '0.04em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Server size={12} /> Provider Pool
-            </div>
+          <Panel label="Provider Pool">
             <ProviderPool vms={data.vm_pool} />
-          </div>
+          </Panel>
         </div>
       </div>
     </div>
   )
 }
 
-function StatPill({ label, value, color }: { label: string; value: number; color: string }) {
+function Panel({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: 'var(--surface)',
+      borderRadius: 12,
+      border: '1px solid var(--border)',
+      overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '14px 20px',
+        borderBottom: '1px solid var(--border)',
+        fontSize: 11,
+        fontWeight: 600,
+        color: 'var(--text-secondary)',
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+      }}>
+        {label}
+      </div>
+      <div style={{ padding: 20 }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function StatPill({ label, value, color, dimColor }: { label: string; value: number; color: string; dimColor: string }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 5,
       padding: '4px 10px',
-      background: 'var(--bg-active)',
       borderRadius: 6,
-      border: '1px solid var(--border-light)',
+      background: dimColor,
+      border: '1px solid var(--border)',
+      fontSize: 12,
     }}>
-      <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
-      <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-primary)' }}>{value}</span>
-      <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{label}</span>
+      <span style={{ fontWeight: 600, color }}>{value}</span>
+      <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
     </div>
   )
 }

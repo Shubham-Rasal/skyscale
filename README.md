@@ -179,6 +179,15 @@ curl -s -X POST 'http://localhost:8080/proxy/demo-web--process/process' \
 
 ---
 
+## GPU training jobs
+
+The dashboard can submit containerized training jobs to GPU providers such as
+Akash and Hugging Face Jobs. See `docs/ml-training-jobs.md` for the custom
+training image contract, metric callbacks, and examples for submitting a new ML
+training job.
+
+---
+
 ## FaaS Usage
 
 Register a function:

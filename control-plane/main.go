@@ -95,6 +95,9 @@ func main() {
 	// Register API routes
 	apiHandler := api.NewAPIHandler(functionRegistry, vmManager, functionScheduler, authManager, stateManager, logger)
 	apiHandler.RegisterRoutes(router)
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+	apiHandler.StartBackgroundWorkers(bgCtx)
 
 	// WebSocket + new REST endpoints
 	wsHandler := api.NewWSHandler(apiHandler, logger)

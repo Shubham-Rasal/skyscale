@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	jobID       = "mnist-test-001"
-	executionID = "exec-mnist-001"
+	jobID       = "mnist-test-002"
+	executionID = "exec-mnist-002"
 	dockerImage = "ghcr.io/shubham-rasal/skyscale-mnist:v1"
 )
 
@@ -47,8 +47,8 @@ func main() {
 	fmt.Println(sdl)
 	fmt.Println("====================")
 
-	// Seed execution record in the control plane so the dashboard can show it
-	if err := seedExecution(controlPlaneURL, logger); err != nil {
+	// Seed a placeholder execution record (no dseq yet)
+	if err := seedExecution(controlPlaneURL, "", logger); err != nil {
 		logger.Warnf("Could not seed execution record: %v (dashboard may not show job)", err)
 	}
 
@@ -62,6 +62,11 @@ func main() {
 	fmt.Printf("ID:       %s\n", deployment.ID)
 	fmt.Printf("Provider: %s\n", deployment.ProviderAddr)
 	fmt.Printf("Status:   %s\n", deployment.Status)
+
+	// Update execution record with the real dseq so the UI checks go green
+	if err := seedExecution(controlPlaneURL, deployment.ID, logger); err != nil {
+		logger.Warnf("Could not update execution with dseq: %v", err)
+	}
 
 	// Register the Akash deployment as a VM so GPU metrics work
 	if err := seedVM(controlPlaneURL, deployment, logger); err != nil {
@@ -88,8 +93,9 @@ func main() {
 	logger.Warn("Timed out waiting for completion — check dashboard for results")
 }
 
-// seedExecution creates an execution record in the control plane state.
-func seedExecution(baseURL string, logger *logrus.Logger) error {
+// seedExecution creates/updates an execution record. Pass dseq="" before deployment,
+// then call again with the real dseq to set VMID so the dashboard checks go green.
+func seedExecution(baseURL, dseq string, logger *logrus.Logger) error {
 	body, _ := json.Marshal(map[string]any{
 		"id":            executionID,
 		"job_id":        jobID,
@@ -97,8 +103,7 @@ func seedExecution(baseURL string, logger *logrus.Logger) error {
 		"job_type":      "training_run",
 		"hardware_type": "gpu",
 		"gpu_model":     "a100",
-		"docker_image":  dockerImage,
-		"start_time":    time.Now().Format(time.RFC3339),
+		"vm_id":         dseq,
 	})
 	resp, err := http.Post(baseURL+"/api/training/executions", "application/json", bytes.NewReader(body))
 	if err != nil {

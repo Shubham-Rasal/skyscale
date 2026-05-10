@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
-	"github.com/bluequbit/faas/control-plane/akash"
 	"github.com/bluequbit/faas/control-plane/state"
 	"github.com/gorilla/mux"
 )
@@ -15,7 +15,6 @@ import (
 // type aliases to avoid import cycle verbosity
 type stateExecution = state.Execution
 type stateVM = state.VM
-type akashSDLData = akash.SDLData
 
 // TrainingMetric is a single training step metric from a GPU job.
 type TrainingMetric struct {
@@ -83,29 +82,59 @@ func (h *APIHandler) trainingMetricsHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	h.trainingMetrics.Push(m)
+	// Write-through to SQLite so metrics survive restarts.
+	rec := &state.TrainingMetricRecord{
+		JobID:         m.JobID,
+		Step:          m.Step,
+		EpisodeReward: m.EpisodeReward,
+		Loss:          m.Loss,
+		GPUUtil:       m.GPUUtil,
+		Timestamp:     m.Timestamp,
+	}
+	if err := h.stateManager.SaveMetric(rec); err != nil {
+		h.logger.Warnf("trainingMetrics: db write: %v", err)
+	}
 	w.WriteHeader(http.StatusAccepted)
 }
 
 // trainingMetricsGetHandler returns all metrics for a specific job.
+// Serves from the in-memory ring first; falls back to DB if ring is empty (e.g. after restart).
 func (h *APIHandler) trainingMetricsGetHandler(w http.ResponseWriter, r *http.Request) {
 	jobID := mux.Vars(r)["job_id"]
 	snapshot := h.trainingMetrics.Snapshot()
 	metrics, ok := snapshot[jobID]
-	if !ok {
-		metrics = []TrainingMetric{}
+	if !ok || len(metrics) == 0 {
+		// Fallback: load from DB.
+		rows, err := h.stateManager.GetMetrics(jobID)
+		if err != nil {
+			h.logger.Warnf("trainingMetrics: db read: %v", err)
+		}
+		metrics = make([]TrainingMetric, 0, len(rows))
+		for _, r := range rows {
+			metrics = append(metrics, TrainingMetric{
+				JobID:         r.JobID,
+				Step:          r.Step,
+				EpisodeReward: r.EpisodeReward,
+				Loss:          r.Loss,
+				GPUUtil:       r.GPUUtil,
+				Timestamp:     r.Timestamp,
+			})
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(metrics)
 }
 
-// submitTrainingJobHandler accepts a job submission from the dashboard, deploys to Akash,
-// and returns the execution ID immediately. The container calls back when done.
+// submitTrainingJobHandler accepts a job submission from the dashboard, enqueues it,
+// and returns the execution ID immediately. Workers dispatch via the provider registry.
 func (h *APIHandler) submitTrainingJobHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		JobID       string            `json:"job_id"`
-		DockerImage string            `json:"docker_image"`
-		GPUModel    string            `json:"gpu_model"`
-		EnvVars     map[string]string `json:"env_vars"`
+		JobID           string            `json:"job_id"`
+		DockerImage     string            `json:"docker_image"`
+		GPUModel        string            `json:"gpu_model"`
+		Provider        string            `json:"provider"`
+		EnvVars         map[string]string `json:"env_vars"`
+		ControlPlaneURL string            `json:"control_plane_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -121,22 +150,17 @@ func (h *APIHandler) submitTrainingJobHandler(w http.ResponseWriter, r *http.Req
 	if body.GPUModel == "" {
 		body.GPUModel = "a100"
 	}
-
-	executionID := "exec-" + body.JobID
-	controlPlaneURL := r.Header.Get("X-Control-Plane-URL")
-	if controlPlaneURL == "" {
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		controlPlaneURL = scheme + "://" + r.Host
+	if body.ControlPlaneURL == "" {
+		body.ControlPlaneURL = defaultControlPlaneURL(r)
 	}
 
-	// Seed execution record immediately so dashboard shows "running"
+	executionID := "exec-" + body.JobID
+
+	// Seed execution record immediately so dashboard shows "queued".
 	exec := &stateExecution{
 		ID:           executionID,
 		FunctionID:   body.JobID,
-		Status:       "running",
+		Status:       "queued",
 		StartTime:    time.Now(),
 		JobType:      "training_run",
 		HardwareType: "gpu",
@@ -146,54 +170,57 @@ func (h *APIHandler) submitTrainingJobHandler(w http.ResponseWriter, r *http.Req
 		h.logger.Errorf("submitTrainingJob: seed execution: %v", err)
 	}
 
-	// Deploy to Akash asynchronously
-	go func() {
-		sdlData := akashSDLData{
-			DockerImage:     body.DockerImage,
-			JobID:           body.JobID,
-			ExecutionID:     executionID,
-			ControlPlaneURL: controlPlaneURL,
-			GPUModel:        body.GPUModel,
-			EnvVars:         body.EnvVars,
-		}
-		sdl, err := h.akashClient.GenerateTrainingSDL(sdlData)
-		if err != nil {
-			h.logger.Errorf("submitTrainingJob: generate SDL: %v", err)
-			h.markExecutionFailed(executionID, "failed to generate SDL: "+err.Error())
-			return
-		}
-		deployment, err := h.akashClient.CreateDeployment(sdl, body.JobID)
-		if err != nil {
-			h.logger.Errorf("submitTrainingJob: create deployment: %v", err)
-			h.markExecutionFailed(executionID, err.Error())
-			return
-		}
-		h.logger.Infof("submitTrainingJob: deployment created dseq=%s", deployment.ID)
+	// Encode env vars to JSON for the queue item.
+	envJSON, _ := json.Marshal(body.EnvVars)
 
-		// Update execution with dseq so UI checks go green
-		exec.VMID = deployment.ID
-		h.stateManager.SaveExecution(exec)
-
-		// Register VM for GPU metrics
-		vm := &stateVM{
-			ID:                deployment.ID,
-			Status:            "busy",
-			HardwareType:      "gpu",
-			GPUModel:          body.GPUModel,
-			ProviderAddr:      deployment.ProviderAddr,
-			AkashDeploymentID: deployment.ID,
-			CreatedAt:         time.Now(),
-		}
-		h.stateManager.SaveVM(vm)
-	}()
+	item := &state.JobQueueItem{
+		ID:              body.JobID,
+		ExecutionID:     executionID,
+		DockerImage:     body.DockerImage,
+		GPUModel:        body.GPUModel,
+		ProviderName:    body.Provider,
+		EnvVarsJSON:     string(envJSON),
+		ControlPlaneURL: body.ControlPlaneURL,
+		Priority:        0,
+		Status:          "queued",
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+	if err := h.stateManager.EnqueueJob(item); err != nil {
+		h.logger.Errorf("submitTrainingJob: enqueue: %v", err)
+		http.Error(w, "failed to enqueue job", http.StatusInternalServerError)
+		return
+	}
+	h.logger.Infof("submitTrainingJob: enqueued job=%s exec=%s", body.JobID, executionID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{
 		"execution_id": executionID,
 		"job_id":       body.JobID,
-		"status":       "running",
+		"status":       "queued",
 	})
+}
+
+func defaultControlPlaneURL(r *http.Request) string {
+	if base := os.Getenv("SKYSCALE_PUBLIC_BASE"); base != "" {
+		return base
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
+		scheme = forwardedProto
+	}
+	host := r.Host
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+	if host == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
 func (h *APIHandler) markExecutionFailed(executionID, errMsg string) {
@@ -252,12 +279,12 @@ func (h *APIHandler) seedExecutionHandler(w http.ResponseWriter, r *http.Request
 // seedVMHandler registers an Akash deployment as a GPU VM in state.
 func (h *APIHandler) seedVMHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ID                 string `json:"id"`
-		Status             string `json:"status"`
-		HardwareType       string `json:"hardware_type"`
-		GPUModel           string `json:"gpu_model"`
-		Provider           string `json:"provider"`
-		AkashDeploymentID  string `json:"akash_deployment_id"`
+		ID                string `json:"id"`
+		Status            string `json:"status"`
+		HardwareType      string `json:"hardware_type"`
+		GPUModel          string `json:"gpu_model"`
+		Provider          string `json:"provider"`
+		AkashDeploymentID string `json:"akash_deployment_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)

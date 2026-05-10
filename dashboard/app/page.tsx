@@ -23,11 +23,10 @@ export default function HomePage() {
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)' }}>
       <Sidebar connected={connected} />
 
-      {/* Main */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
         {/* Top bar */}
         <div style={{
-          height: 52,
+          height: 56,
           borderBottom: '1px solid var(--border)',
           display: 'flex',
           alignItems: 'center',
@@ -35,13 +34,13 @@ export default function HomePage() {
           gap: 12,
           flexShrink: 0,
         }}>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
             <h1 style={{
-              fontFamily: "var(--font-grotesk), sans-serif",
+              fontFamily: 'var(--font-grotesk), sans-serif',
               fontSize: 15,
               fontWeight: 600,
               color: 'var(--text-primary)',
-              letterSpacing: '-0.01em',
+              letterSpacing: '-0.02em',
             }}>
               Training
             </h1>
@@ -52,36 +51,41 @@ export default function HomePage() {
               borderRadius: 4,
               background: 'var(--accent-dim)',
               color: 'var(--accent)',
-              letterSpacing: '0.04em',
+              letterSpacing: '0.06em',
+              border: '1px solid var(--accent-border)',
             }}>
               BETA
             </span>
           </div>
 
-          {/* Stats pills */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <StatPill label="Active" value={data.active.length} color="#3b82f6" />
-            <StatPill label="GPU nodes" value={activeGPU} color="var(--accent)" />
-            <StatPill label="Completed" value={data.recent.filter(e => e.Status === 'completed').length} color="#22c55e" />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <StatPill label="Active" value={data.active.length} color="var(--running)" dimColor="var(--running-dim)" />
+            <StatPill label="GPU nodes" value={activeGPU} color="var(--accent)" dimColor="var(--accent-dim)" />
+            <StatPill label="Done" value={data.recent.filter(e => e.Status === 'completed').length} color="var(--success)" dimColor="var(--success-dim)" />
           </div>
 
-          {/* Metrics toggle */}
           {(hasTrainingMetrics || activeGPU > 0) && (
             <button
               onClick={() => setShowMetrics(v => !v)}
               style={{
                 padding: '5px 12px',
                 background: showMetrics ? 'var(--bg-active)' : 'transparent',
-                border: '1px solid var(--border-light)',
-                borderRadius: 6,
+                border: `1px solid ${showMetrics ? 'var(--border-light)' : 'var(--border)'}`,
+                borderRadius: 7,
                 color: showMetrics ? 'var(--text-primary)' : 'var(--text-secondary)',
                 fontSize: 12,
                 fontWeight: 500,
                 cursor: 'pointer',
                 fontFamily: 'inherit',
                 transition: 'all 0.1s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
               }}
             >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <polyline points="1,9 4,5 7,7 11,2"/>
+              </svg>
               Metrics
             </button>
           )}
@@ -94,7 +98,7 @@ export default function HomePage() {
               <button
                 onClick={() => setDialogOpen(true)}
                 style={{
-                  padding: '6px 14px',
+                  padding: '7px 14px',
                   background: 'var(--accent)',
                   color: 'white',
                   border: 'none',
@@ -106,10 +110,14 @@ export default function HomePage() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
+                  letterSpacing: '-0.01em',
+                  transition: 'background 0.1s',
                 }}
+                onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = 'var(--accent-hover)'}
+                onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'var(--accent)'}
               >
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round">
-                  <path d="M6 1v10M1 6h10"/>
+                <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round">
+                  <path d="M5.5 1v9M1 5.5h9"/>
                 </svg>
                 New Run
               </button>
@@ -123,38 +131,41 @@ export default function HomePage() {
           borderBottom: '1px solid var(--border)',
           display: 'flex',
           alignItems: 'center',
-          gap: 10,
+          gap: 8,
           flexShrink: 0,
+          background: 'var(--bg)',
         }}>
-          <div style={{ position: 'relative', flex: 1, maxWidth: 320 }}>
+          <div style={{ position: 'relative', flex: 1, maxWidth: 360 }}>
             <svg
               width="13" height="13" viewBox="0 0 13 13" fill="none"
               stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round"
               style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}
             >
-              <circle cx="5.5" cy="5.5" r="4.5"/><path d="M10 10l2 2"/>
+              <circle cx="5.5" cy="5.5" r="4.5"/><path d="M10.5 10.5l1.5 1.5"/>
             </svg>
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search runs..."
+              placeholder="Search by name, model, or tag…"
               style={{
                 width: '100%',
-                height: 32,
+                height: 33,
                 paddingLeft: 30,
                 paddingRight: 10,
-                background: 'var(--bg-panel)',
+                background: 'var(--surface)',
                 border: '1px solid var(--border)',
-                borderRadius: 6,
+                borderRadius: 7,
                 color: 'var(--text-primary)',
                 fontSize: 13,
                 fontFamily: 'inherit',
                 outline: 'none',
+                transition: 'border-color 0.1s',
               }}
               onFocus={e => (e.target as HTMLInputElement).style.borderColor = 'var(--border-light)'}
               onBlur={e => (e.target as HTMLInputElement).style.borderColor = 'var(--border)'}
             />
           </div>
+          <div style={{ width: 1, height: 20, background: 'var(--border)', marginLeft: 2, marginRight: 2 }} />
           <FilterChip active label="All" />
           <FilterChip label="Running" />
           <FilterChip label="GPU" />
@@ -167,21 +178,16 @@ export default function HomePage() {
               borderBottom: '1px solid var(--border)',
               display: 'grid',
               gridTemplateColumns: hasTrainingMetrics ? '1fr 1fr' : '1fr',
-              gap: 0,
             }}>
               {hasTrainingMetrics && (
-                <div style={{ borderRight: '1px solid var(--border)', padding: 20 }}>
-                  <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 12, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-                    Training Curves
-                  </div>
+                <div style={{ borderRight: '1px solid var(--border)', padding: '20px 24px' }}>
+                  <SectionLabel>Training Curves</SectionLabel>
                   <TrainingChart trainingMetrics={data.training_metrics} />
                 </div>
               )}
               {activeGPU > 0 && (
-                <div style={{ padding: 20 }}>
-                  <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 12, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-                    GPU Utilization
-                  </div>
+                <div style={{ padding: '20px 24px' }}>
+                  <SectionLabel>GPU Utilization</SectionLabel>
                   <GPUMetrics metrics={data.gpu} />
                 </div>
               )}
@@ -202,18 +208,33 @@ export default function HomePage() {
   )
 }
 
-function StatPill({ label, value, color }: { label: string; value: number; color: string }) {
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      fontSize: 10,
+      fontWeight: 600,
+      color: 'var(--text-secondary)',
+      marginBottom: 14,
+      letterSpacing: '0.08em',
+      textTransform: 'uppercase',
+    }}>
+      {children}
+    </div>
+  )
+}
+
+function StatPill({ label, value, color, dimColor }: { label: string; value: number; color: string; dimColor: string }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 5,
-      padding: '3px 10px',
-      borderRadius: 20,
-      background: 'var(--bg-panel)',
+      padding: '4px 10px',
+      borderRadius: 6,
+      background: dimColor,
       border: '1px solid var(--border)',
       fontSize: 12,
     }}>
-      <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
       <span style={{ fontWeight: 600, color }}>{value}</span>
+      <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
     </div>
   )
 }
@@ -222,7 +243,7 @@ function FilterChip({ label, active }: { label: string; active?: boolean }) {
   return (
     <button style={{
       padding: '4px 10px',
-      borderRadius: 5,
+      borderRadius: 6,
       border: active ? '1px solid var(--border-light)' : '1px solid transparent',
       background: active ? 'var(--bg-active)' : 'transparent',
       color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
@@ -230,6 +251,7 @@ function FilterChip({ label, active }: { label: string; active?: boolean }) {
       fontWeight: active ? 500 : 400,
       cursor: 'pointer',
       fontFamily: 'inherit',
+      transition: 'all 0.1s',
     }}>
       {label}
     </button>

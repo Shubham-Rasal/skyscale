@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -34,6 +36,7 @@ type VMManager struct {
 	warmPoolSize int
 	warmPool     chan *state.VM
 	mu           sync.Mutex
+	createMu     sync.Mutex
 	akashMu      sync.Mutex // serialises Akash deployment creation
 	vms          map[string]*VMInstance
 }
@@ -83,19 +86,30 @@ func NewVMManager(stateManager *state.StateManager, logger *logrus.Logger) (*VMM
 	if err := os.MkdirAll(vmDir, 0755); err != nil {
 		return nil, err
 	}
+	warmPoolSize := 2
+	if v := os.Getenv("WARM_POOL_SIZE"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid WARM_POOL_SIZE %q", v)
+		}
+		warmPoolSize = n
+	}
 
 	manager := &VMManager{
 		stateManager: stateManager,
 		akashClient:  akash.NewClient(logger),
 		logger:       logger,
 		vmDir:        vmDir,
-		warmPoolSize: 2, // Keep pool small to save disk space (each VM copies ~385MB rootfs)
-		warmPool:     make(chan *state.VM, 2),
+		warmPoolSize: warmPoolSize,
+		warmPool:     make(chan *state.VM, max(1, warmPoolSize)),
 		vms:          make(map[string]*VMInstance),
 	}
 
-	// Start warm pool manager
-	go manager.manageWarmPool()
+	if warmPoolSize > 0 {
+		go manager.manageWarmPool()
+	} else {
+		logger.Info("Firecracker warm pool disabled")
+	}
 
 	return manager, nil
 }
@@ -108,13 +122,18 @@ func (m *VMManager) manageWarmPool() {
 	for {
 		select {
 		case <-ticker.C:
-			m.mu.Lock()
 			currentSize := len(m.warmPool)
-			m.mu.Unlock()
 
 			if currentSize < m.warmPoolSize {
 				m.logger.Infof("Warm pool size: %d/%d, creating new warm VM", currentSize, m.warmPoolSize)
+				m.createMu.Lock()
+				if len(m.warmPool) >= m.warmPoolSize {
+					m.createMu.Unlock()
+					m.logger.Infof("Warm pool refilled while waiting; size: %d/%d", len(m.warmPool), m.warmPoolSize)
+					continue
+				}
 				vm, err := m.createVM(true)
+				m.createMu.Unlock()
 				if err != nil {
 					m.logger.Errorf("Failed to create warm VM: %v", err)
 					continue
@@ -153,6 +172,23 @@ func (m *VMManager) GetVM() (*state.VM, error) {
 	default:
 		// No warm VM available, create a new one
 		m.logger.Info("No warm VM available, creating new VM")
+		m.createMu.Lock()
+		defer m.createMu.Unlock()
+
+		// Another invocation may have returned a VM while this request waited
+		// for the cold-start lock.
+		select {
+		case vm := <-m.warmPool:
+			m.logger.Infof("Using warm VM %s from pool after waiting for cold-start lock", vm.ID)
+			vm.Status = "busy"
+			vm.LastUsed = time.Now()
+			if err := m.stateManager.SaveVM(vm); err != nil {
+				m.logger.Errorf("Failed to update VM status: %v", err)
+			}
+			return vm, nil
+		default:
+		}
+
 		return m.createVM(false)
 	}
 }
@@ -161,6 +197,22 @@ func (m *VMManager) GetVM() (*state.VM, error) {
 func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 	// Generate VM ID
 	id := uuid.New().String()
+	cleanupOnError := true
+	var machine *firecracker.Machine
+	defer func() {
+		if !cleanupOnError {
+			return
+		}
+		if machine != nil {
+			if err := machine.StopVMM(); err != nil {
+				m.logger.Debugf("Failed to stop VM %s during failed startup cleanup: %v", id, err)
+			}
+		}
+		vmDir := filepath.Join(m.vmDir, id)
+		if err := os.RemoveAll(vmDir); err != nil {
+			m.logger.Errorf("Failed to remove VM directory %s after startup failure: %v", vmDir, err)
+		}
+	}()
 
 	// Create VM directory
 	vmDir := filepath.Join(m.vmDir, id)
@@ -251,6 +303,9 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 	ipAddress := machine.Cfg.NetworkInterfaces[0].StaticConfiguration.IPConfiguration.IPAddr.IP.String()
 
 	m.logger.WithField("ip", ipAddress).Info("machine started")
+	if err := m.waitForDaemon(ctx, id, ipAddress, 8081); err != nil {
+		return nil, err
+	}
 
 	// Create VM instance
 	vmInstance := &VMInstance{
@@ -292,7 +347,49 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 		m.logger.Errorf("Failed to save VM to state manager: %v", err)
 	}
 
+	cleanupOnError = false
 	return vm, nil
+}
+
+func (m *VMManager) waitForDaemon(ctx context.Context, id, ip string, port int) error {
+	timeout := 45 * time.Second
+	if raw := os.Getenv("FAAS_VM_DAEMON_READY_TIMEOUT"); raw != "" {
+		seconds, err := strconv.Atoi(raw)
+		if err != nil || seconds <= 0 {
+			return fmt.Errorf("invalid FAAS_VM_DAEMON_READY_TIMEOUT %q", raw)
+		}
+		timeout = time.Duration(seconds) * time.Second
+	}
+
+	deadline := time.Now().Add(timeout)
+	healthURL := fmt.Sprintf("http://%s:%d/health", ip, port)
+	client := &http.Client{Timeout: 750 * time.Millisecond}
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				m.logger.Infof("VM %s daemon ready at %s", id, healthURL)
+				return nil
+			}
+			lastErr = fmt.Errorf("daemon health returned status %d", resp.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("daemon on VM %s did not become ready at %s within %s: %w", id, healthURL, timeout, lastErr)
+	}
+	return fmt.Errorf("daemon on VM %s did not become ready at %s within %s", id, healthURL, timeout)
 }
 
 // ReturnVM returns a VM to the warm pool

@@ -35,6 +35,12 @@ export const api = {
 
   listExecutions: (functionId: string) =>
     fetch(`${BASE}/api/executions/function/${functionId}`).then(r => r.json()),
+
+  listArtifacts: (executionId: string): Promise<string[]> =>
+    fetch(`${BASE}/api/executions/${executionId}/artifacts`).then(r => r.json()),
+
+  artifactDownloadURL: (executionId: string, filename: string) =>
+    `${BASE}/api/executions/${executionId}/artifacts/${encodeURIComponent(filename)}`,
 }
 
 export const WS_URL =

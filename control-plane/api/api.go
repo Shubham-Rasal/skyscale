@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 	_ "net/http/pprof"
 	"github.com/bluequbit/faas/control-plane/akash"
 	"github.com/bluequbit/faas/control-plane/auth"
+	"github.com/bluequbit/faas/control-plane/providers"
 	"github.com/bluequbit/faas/control-plane/registry"
 	"github.com/bluequbit/faas/control-plane/scheduler"
 	"github.com/bluequbit/faas/control-plane/state"
@@ -24,6 +26,10 @@ type APIHandler struct {
 	stateManager     *state.StateManager
 	trainingMetrics  *TrainingMetricsStore
 	akashClient      *akash.Client
+	providerRegistry *providers.Registry
+	bufferPool       *providers.BufferPool
+	jobDispatcher    *scheduler.JobQueueDispatcher
+	artifactStore    *ArtifactStore
 	logger           *logrus.Logger
 }
 
@@ -77,6 +83,9 @@ type ExecutionResult struct {
 
 // NewAPIHandler creates a new API handler
 func NewAPIHandler(functionRegistry *registry.FunctionRegistry, vmManager *vm.VMManager, sched *scheduler.Scheduler, authManager *auth.AuthManager, stateManager *state.StateManager, logger *logrus.Logger) *APIHandler {
+	reg := providers.NewRegistry(logger)
+	pool := providers.NewBufferPool(reg, stateManager, logger)
+	dispatcher := scheduler.NewJobQueueDispatcher(stateManager, reg, pool, logger)
 	return &APIHandler{
 		functionRegistry: functionRegistry,
 		vmManager:        vmManager,
@@ -85,8 +94,19 @@ func NewAPIHandler(functionRegistry *registry.FunctionRegistry, vmManager *vm.VM
 		stateManager:     stateManager,
 		trainingMetrics:  NewTrainingMetricsStore(),
 		akashClient:      akash.NewClient(logger),
+		providerRegistry: reg,
+		bufferPool:       pool,
+		jobDispatcher:    dispatcher,
+		artifactStore:    NewArtifactStore(),
 		logger:           logger,
 	}
+}
+
+// StartBackgroundWorkers starts the job queue dispatcher and buffer pool.
+// Call this once after NewAPIHandler.
+func (h *APIHandler) StartBackgroundWorkers(ctx context.Context) {
+	h.bufferPool.Start()
+	h.jobDispatcher.Start(ctx)
 }
 
 // RegisterRoutes registers API routes
@@ -122,6 +142,10 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	executions.HandleFunc("/{id}", h.getExecutionHandler).Methods("GET")
 	executions.HandleFunc("/{id}/complete", h.completeExecutionHandler).Methods("POST")
 	executions.HandleFunc("/function/{id}", h.listExecutionsHandler).Methods("GET")
+	// Artifact routes (called by training containers and dashboard)
+	executions.HandleFunc("/{id}/artifacts", h.uploadArtifactHandler).Methods("POST")
+	executions.HandleFunc("/{id}/artifacts", h.listArtifactsHandler).Methods("GET")
+	executions.HandleFunc("/{id}/artifacts/{filename}", h.downloadArtifactHandler).Methods("GET")
 
 	// Training metrics routes (no auth — called by containers on Akash)
 	api.HandleFunc("/training/metrics", h.TrainingMetricsHandler).Methods("POST")

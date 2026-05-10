@@ -11,10 +11,24 @@ const TEMPLATES = [
       functionName: 'mnist-trainer',
       jobType: 'training_run',
       hardwareType: 'gpu',
+      provider: 'akash',
       gpuModel: 'a100',
       dockerImage: 'ghcr.io/shubham-rasal/skyscale-mnist:v1',
       controlPlaneURL: 'http://n8n.maximalstudio.in:8080',
       input: JSON.stringify({ epochs: 3, batch_size: 512 }, null, 2),
+    },
+  },
+  {
+    label: 'MNIST HF',
+    defaults: {
+      functionName: 'hf-mnist-trainer',
+      jobType: 'training_run',
+      hardwareType: 'gpu',
+      provider: 'huggingface',
+      gpuModel: 'a10g',
+      dockerImage: 'ghcr.io/shubham-rasal/skyscale-mnist:v1',
+      controlPlaneURL: 'http://n8n.maximalstudio.in:8080',
+      input: JSON.stringify({ epochs: 1, batch_size: 512 }, null, 2),
     },
   },
   {
@@ -23,6 +37,7 @@ const TEMPLATES = [
       functionName: 'cartpole-trainer',
       jobType: 'training_run',
       hardwareType: 'gpu',
+      provider: 'akash',
       gpuModel: 'a100',
       dockerImage: 'ghcr.io/shubham-rasal/skyscale/skyscale-trainer:latest',
       controlPlaneURL: 'http://n8n.maximalstudio.in:8080',
@@ -35,6 +50,7 @@ const TEMPLATES = [
       functionName: '',
       jobType: 'faas_function',
       hardwareType: 'cpu',
+      provider: 'akash',
       gpuModel: '',
       dockerImage: '',
       controlPlaneURL: '',
@@ -47,6 +63,7 @@ const TEMPLATES = [
       functionName: '',
       jobType: 'faas_function',
       hardwareType: 'cpu',
+      provider: 'akash',
       gpuModel: '',
       dockerImage: '',
       controlPlaneURL: '',
@@ -84,8 +101,47 @@ const label: React.CSSProperties = {
   fontWeight: 500,
 }
 
+const GPU_MODELS: Record<string, { value: string; label: string }[]> = {
+  akash: [
+    { value: 'a100', label: 'A100 80GB (SXM4)' },
+    { value: 'h100', label: 'H100 80GB (SXM5)' },
+    { value: 'h200', label: 'H200 141GB (SXM5)' },
+    { value: 'rtx4090', label: 'RTX 4090 24GB' },
+    { value: 'rtx3090', label: 'RTX 3090 24GB' },
+    { value: 'rtx3060', label: 'RTX 3060 12GB' },
+    { value: 'rtx6000', label: 'RTX 6000 24GB' },
+    { value: 't4', label: 'T4 16GB' },
+  ],
+  huggingface: [
+    { value: 'a10g', label: 'A10G 24GB' },
+    { value: 'a10g-large', label: 'A10G 24GB Large' },
+    { value: 'a100', label: 'A100 80GB' },
+    { value: 'h200', label: 'H200 141GB' },
+    { value: 'l4', label: 'L4 24GB' },
+    { value: 't4', label: 'T4 16GB' },
+  ],
+}
+
+function templateIndex(label?: string) {
+  if (!label) return 0
+  const idx = TEMPLATES.findIndex(t => t.label === label)
+  return idx >= 0 ? idx : 0
+}
+
+function isLocalCallbackURL(value: string) {
+  try {
+    const host = new URL(value).hostname.toLowerCase()
+    if (!host || host === 'localhost' || host === '0.0.0.0' || host === '::1') return true
+    if (host.startsWith('127.') || host.startsWith('10.') || host.startsWith('192.168.')) return true
+    const parts = host.split('.').map(Number)
+    return parts.length === 4 && parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31
+  } catch {
+    return true
+  }
+}
+
 export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, initialTemplate }: Props) {
-  const initIdx = initialTemplate ? Math.max(0, TEMPLATES.findIndex(t => t.label === initialTemplate)) : 0
+  const initIdx = templateIndex(initialTemplate)
   const [tplIdx, setTplIdx] = useState(initIdx)
   const [fields, setFields] = useState(TEMPLATES[initIdx].defaults)
   const [submitting, setSubmitting] = useState(false)
@@ -101,6 +157,14 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
     setFields(f => ({ ...f, [k]: v }))
   }
 
+  function setProvider(provider: string) {
+    setFields(f => ({
+      ...f,
+      provider,
+      gpuModel: GPU_MODELS[provider]?.[0]?.value ?? f.gpuModel,
+    }))
+  }
+
   async function submit() {
     setError('')
     let input: Record<string, unknown> = {}
@@ -109,14 +173,20 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
       return
     }
     if (!fields.functionName && fields.hardwareType !== 'gpu') { setError('Function name is required'); return }
+    if (fields.hardwareType === 'gpu' && fields.provider === 'huggingface' && isLocalCallbackURL(fields.controlPlaneURL)) {
+      setError('Hugging Face jobs need a public Control Plane URL for metrics and completion callbacks')
+      return
+    }
     setSubmitting(true)
     try {
       if (fields.hardwareType === 'gpu' && fields.jobType === 'training_run') {
-        // GPU training jobs go directly to the Akash deployment path
+        // GPU training jobs go through the selected provider path.
         await api.submitTrainingJob({
           job_id: fields.functionName,
           docker_image: fields.dockerImage,
+          provider: fields.provider,
           gpu_model: fields.gpuModel || 'a100',
+          control_plane_url: fields.controlPlaneURL,
           env_vars: Object.fromEntries(
             Object.entries(input as Record<string, unknown>)
               .map(([k, v]) => [k.toUpperCase(), String(v)])
@@ -203,7 +273,7 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
                 style={{ ...field, cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b6b6b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', paddingRight: 28 }}
               >
                 <option value="cpu">CPU (Firecracker)</option>
-                <option value="gpu">GPU (Akash)</option>
+                <option value="gpu">GPU</option>
               </select>
             </div>
           </div>
@@ -211,23 +281,29 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
           {fields.hardwareType === 'gpu' && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div>
+                <span style={label}>Provider</span>
+                <select
+                  value={fields.provider}
+                  onChange={e => setProvider(e.target.value)}
+                  style={{ ...field, cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b6b6b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', paddingRight: 28 }}
+                >
+                  <option value="akash">Akash</option>
+                  <option value="huggingface">Hugging Face</option>
+                </select>
+              </div>
+              <div>
                 <span style={label}>GPU Model</span>
                 <select
                   value={fields.gpuModel}
                   onChange={e => set('gpuModel', e.target.value)}
                   style={{ ...field, cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b6b6b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', paddingRight: 28 }}
                 >
-                  <option value="a100">A100 80GB (SXM4) — 22 free</option>
-                  <option value="h100">H100 80GB (SXM5) — 18 free</option>
-                  <option value="h200">H200 141GB (SXM5) — 20 free</option>
-                  <option value="rtx4090">RTX 4090 24GB — 7 free</option>
-                  <option value="rtx3090">RTX 3090 24GB — 7 free</option>
-                  <option value="rtx3060">RTX 3060 12GB — 3 free</option>
-                  <option value="rtx6000">RTX 6000 24GB — 4 free</option>
-                  <option value="t4">T4 16GB — 1 free</option>
+                  {(GPU_MODELS[fields.provider] ?? GPU_MODELS.akash).map(model => (
+                    <option key={model.value} value={model.value}>{model.label}</option>
+                  ))}
                 </select>
               </div>
-              <div>
+              <div style={{ gridColumn: '1 / -1' }}>
                 <span style={label}>Docker Image</span>
                 <input value={fields.dockerImage} onChange={e => set('dockerImage', e.target.value)} style={field} placeholder="ghcr.io/…" />
               </div>

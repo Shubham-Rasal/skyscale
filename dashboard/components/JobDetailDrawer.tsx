@@ -11,11 +11,12 @@ interface Props {
 
 function statusColor(s: string) {
   switch (s) {
-    case 'running':   return { fg: '#3b82f6', bg: 'rgba(59,130,246,0.1)' }
-    case 'completed': return { fg: '#22c55e', bg: 'rgba(34,197,94,0.1)' }
+    case 'running':   return { fg: 'var(--running)',  bg: 'var(--running-dim)',  border: 'rgba(59,130,246,0.2)' }
+    case 'queued':    return { fg: 'var(--queued)',   bg: 'rgba(163,163,163,0.08)', border: 'rgba(163,163,163,0.15)' }
+    case 'completed': return { fg: 'var(--success)',  bg: 'var(--success-dim)', border: 'rgba(34,197,94,0.2)' }
     case 'error':
-    case 'failed':    return { fg: '#ef4444', bg: 'rgba(239,68,68,0.1)' }
-    default:          return { fg: '#6b6b6b', bg: 'rgba(107,107,107,0.1)' }
+    case 'failed':    return { fg: 'var(--error)',    bg: 'var(--error-dim)',   border: 'rgba(239,68,68,0.2)' }
+    default:          return { fg: 'var(--text-secondary)', bg: 'rgba(107,107,107,0.08)', border: 'var(--border)' }
   }
 }
 
@@ -36,6 +37,7 @@ function fmtTime(s: string) {
 export function JobDetailDrawer({ executionId, onClose }: Props) {
   const [exec, setExec] = useState<Execution | null>(null)
   const [loading, setLoading] = useState(false)
+  const [artifacts, setArtifacts] = useState<string[]>([])
 
   useEffect(() => {
     if (!executionId) { setExec(null); return }
@@ -52,9 +54,10 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
       if (cancelled) return
       api.getExecution(executionId).then(d => {
         if (!cancelled) setExec(d)
-        // stop polling once terminal
         if (d.Status === 'completed' || d.Status === 'failed' || d.Status === 'error') {
           clearInterval(interval)
+          // Fetch artifacts once the job is terminal.
+          api.listArtifacts(executionId).then(a => { if (!cancelled) setArtifacts(a) }).catch(() => {})
         }
       }).catch(() => {})
     }, 4000)
@@ -81,28 +84,49 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
       <div style={{
         position: 'fixed',
         top: 0, right: 0, bottom: 0,
-        width: 420,
-        background: '#0e0e0e',
-        borderLeft: '1px solid #252525',
+        width: 440,
+        background: 'var(--bg-panel)',
+        borderLeft: '1px solid var(--border-light)',
         zIndex: 50,
         display: 'flex',
         flexDirection: 'column',
         transform: visible ? 'translateX(0)' : 'translateX(100%)',
-        transition: 'transform 0.2s cubic-bezier(0.16,1,0.3,1)',
+        transition: 'transform 0.22s cubic-bezier(0.16,1,0.3,1)',
+        boxShadow: '-16px 0 48px rgba(0,0,0,0.5)',
       }}>
         {/* Header */}
         <div style={{
-          height: 52,
-          borderBottom: '1px solid #1f1f1f',
+          height: 54,
+          borderBottom: '1px solid var(--border)',
           display: 'flex', alignItems: 'center',
           padding: '0 20px', gap: 10, flexShrink: 0,
         }}>
-          <span style={{ fontFamily: 'var(--font-grotesk), sans-serif', fontSize: 14, fontWeight: 600, color: '#e8e8e8', flex: 1 }}>
+          <span style={{
+            fontFamily: 'var(--font-grotesk), sans-serif',
+            fontSize: 14,
+            fontWeight: 600,
+            color: 'var(--text-primary)',
+            flex: 1,
+            letterSpacing: '-0.01em',
+          }}>
             Run Detail
           </span>
           <button
             onClick={onClose}
-            style={{ background: 'none', border: 'none', color: '#6b6b6b', cursor: 'pointer', padding: 4, lineHeight: 1 }}
+            style={{
+              background: 'var(--bg-active)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              padding: '5px 6px',
+              lineHeight: 1,
+              display: 'flex',
+              alignItems: 'center',
+              transition: 'background 0.1s',
+            }}
+            onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-hover)'}
+            onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-active)'}
           >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
               <path d="M1 1l12 12M13 1L1 13"/>
@@ -129,11 +153,22 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
                     const sc = statusColor(exec.Status)
                     return (
                       <span style={{
-                        fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 5,
-                        background: sc.bg, color: sc.fg,
-                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        fontSize: 11,
+                        fontWeight: 500,
+                        padding: '3px 10px',
+                        borderRadius: 5,
+                        background: sc.bg,
+                        color: sc.fg,
+                        border: `1px solid ${sc.border}`,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
                       }}>
-                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: sc.fg, display: 'inline-block' }} />
+                        <span style={{
+                          width: 5, height: 5, borderRadius: '50%',
+                          background: sc.fg, display: 'inline-block',
+                          animation: exec.Status === 'running' ? 'pulse 1.8s ease-in-out infinite' : 'none',
+                        }} />
                         {exec.Status}
                       </span>
                     )
@@ -209,6 +244,30 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
                 </Section>
               )}
 
+              {/* Artifacts */}
+              <Section title="Artifacts">
+                {artifacts.length === 0 ? (
+                  <span style={{ fontSize: 12, color: '#3d3d3d' }}>No artifacts.</span>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    {artifacts.map(name => (
+                      <a
+                        key={name}
+                        href={api.artifactDownloadURL(executionId!, name)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5.5 1v6M2.5 5l3 3 3-3M1 10h9"/>
+                        </svg>
+                        {name}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </Section>
+
               {/* Success check guide */}
               <Section title="How to verify">
                 <div style={{ fontSize: 12, color: '#6b6b6b', lineHeight: 1.7 }}>
@@ -256,14 +315,24 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div>
+    <div style={{
+      background: 'var(--surface)',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      overflow: 'hidden',
+    }}>
       <div style={{
-        fontSize: 10, fontWeight: 600, color: '#3d3d3d',
-        letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10,
+        padding: '8px 14px',
+        borderBottom: '1px solid var(--border)',
+        fontSize: 10,
+        fontWeight: 600,
+        color: 'var(--text-secondary)',
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
       }}>
         {title}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {children}
       </div>
     </div>
@@ -273,8 +342,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-      <span style={{ fontSize: 11, color: '#6b6b6b', minWidth: 120, flexShrink: 0 }}>{label}</span>
-      <span style={{ fontSize: 12, color: '#e8e8e8', fontFamily: mono ? 'monospace' : 'inherit', wordBreak: 'break-all' }}>
+      <span style={{ fontSize: 11, color: 'var(--text-secondary)', minWidth: 110, flexShrink: 0 }}>{label}</span>
+      <span style={{
+        fontSize: 12,
+        color: 'var(--text-primary)',
+        fontFamily: mono ? 'monospace' : 'inherit',
+        wordBreak: 'break-all',
+      }}>
         {value || '—'}
       </span>
     </div>

@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from flask import Flask, jsonify
 
-JOB_ID = os.environ.get("JOB_ID", "local-dev")
+JOB_ID = os.environ.get("SKYSCALE_JOB_ID") or os.environ.get("JOB_ID", "local-dev")
 EXECUTION_ID = os.environ.get("EXECUTION_ID", JOB_ID)
 CONTROL_PLANE_URL = os.environ.get("CONTROL_PLANE_URL", "http://localhost:8080")
 METRICS_PORT = int(os.environ.get("METRICS_PORT", "8082"))

@@ -59,12 +59,13 @@ type ExecutionRequest struct {
 
 // ExecutionContext tracks the context of a function execution
 type ExecutionContext struct {
-	RequestID  string
-	FunctionID string
-	VMID       string
-	StartTime  time.Time
-	Sync       bool
-	Result     chan *ExecutionResult
+	RequestID    string
+	FunctionID   string
+	VMID         string
+	HardwareType string
+	StartTime    time.Time
+	Sync         bool
+	Result       chan *ExecutionResult
 }
 
 // ExecutionResult represents the result of a function execution
@@ -315,12 +316,13 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 	// Track the execution
 	resultChan := make(chan *ExecutionResult, 1)
 	context := &ExecutionContext{
-		RequestID:  request.RequestID,
-		FunctionID: request.FunctionID,
-		VMID:       vmInstance.ID,
-		StartTime:  time.Now(),
-		Sync:       request.Sync,
-		Result:     resultChan,
+		RequestID:    request.RequestID,
+		FunctionID:   request.FunctionID,
+		VMID:         vmInstance.ID,
+		HardwareType: hwType,
+		StartTime:    time.Now(),
+		Sync:         request.Sync,
+		Result:       resultChan,
 	}
 
 	s.mu.Lock()

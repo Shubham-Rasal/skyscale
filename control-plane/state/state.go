@@ -15,6 +15,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // StateManager handles the state management for the control plane
@@ -76,11 +77,11 @@ type VM struct {
 
 // Sandbox represents a long-lived isolated execution environment for AI agents
 type Sandbox struct {
-	ID         string    `gorm:"primaryKey"`
-	VMID       string    `gorm:"index"`
+	ID         string `gorm:"primaryKey"`
+	VMID       string `gorm:"index"`
 	VMIP       string
-	Status     string    // "starting" | "ready" | "busy" | "destroyed"
-	Runtime    string    // "python3" | "bash"
+	Status     string // "starting" | "ready" | "busy" | "destroyed"
+	Runtime    string // "python3" | "bash"
 	CreatedAt  time.Time
 	LastUsedAt time.Time
 	ExpiresAt  time.Time
@@ -106,10 +107,33 @@ type Deployment struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+// StandbyVM is a pre-warmed GPU deployment held in the buffer pool.
+type StandbyVM struct {
+	ID           string `gorm:"primaryKey"`
+	ProviderName string // "akash", "aws", "azure"
+	ProviderAddr string
+	GPUModel     string `gorm:"index"`
+	DeploymentID string
+	Status       string `gorm:"index"` // standby | claimed | expired
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+}
+
+// TrainingMetricRecord persists a single training step metric to SQLite.
+type TrainingMetricRecord struct {
+	ID            uint   `gorm:"primaryKey;autoIncrement"`
+	JobID         string `gorm:"index"`
+	Step          int
+	EpisodeReward float64
+	Loss          float64
+	GPUUtil       int
+	Timestamp     int64
+}
+
 // SandboxExec represents a single code execution within a sandbox
 type SandboxExec struct {
-	ID         string    `gorm:"primaryKey"`
-	SandboxID  string    `gorm:"index"`
+	ID         string `gorm:"primaryKey"`
+	SandboxID  string `gorm:"index"`
 	Language   string
 	Status     string // "done" | "error" | "timeout"
 	Stdout     string
@@ -173,13 +197,15 @@ func NewStateManagerFromDB(db *gorm.DB, logger *logrus.Logger) *StateManager {
 // NewStateManager creates a new state manager
 func NewStateManager(logger *logrus.Logger) (*StateManager, error) {
 	// Initialize SQLite database
-	db, err := gorm.Open(sqlite.Open("skyscale.db"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("skyscale.db"), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
 	if err != nil {
 		return nil, err
 	}
 
 	// Auto migrate the schema
-	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{}, &Deployment{})
+	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{}, &Deployment{}, &TrainingMetricRecord{}, &StandbyVM{}, &JobQueueItem{})
 	if err != nil {
 		return nil, err
 	}
@@ -370,6 +396,70 @@ func (s *StateManager) GetActiveExecutions() map[string]string {
 		return true
 	})
 	return result
+}
+
+// EnqueueJob inserts a new job queue item.
+func (s *StateManager) EnqueueJob(item *JobQueueItem) error {
+	return s.db.Create(item).Error
+}
+
+// ClaimNextJob atomically claims the highest-priority queued job.
+// Returns nil if the queue is empty.
+func (s *StateManager) ClaimNextJob() (*JobQueueItem, error) {
+	var item JobQueueItem
+	err := s.db.Where("status = ?", "queued").
+		Order("priority desc, created_at asc").
+		First(&item).Error
+	if err != nil {
+		return nil, err // gorm.ErrRecordNotFound when empty
+	}
+	item.Status = "dispatching"
+	item.UpdatedAt = time.Now()
+	return &item, s.db.Save(&item).Error
+}
+
+// UpdateJobStatus sets the status (and optional error) on a job queue item.
+func (s *StateManager) UpdateJobStatus(id, status, errMsg string) error {
+	updates := map[string]interface{}{"status": status, "updated_at": time.Now()}
+	if errMsg != "" {
+		updates["error"] = errMsg
+	}
+	return s.db.Model(&JobQueueItem{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// SaveStandbyVM persists a standby VM slot.
+func (s *StateManager) SaveStandbyVM(vm *StandbyVM) error {
+	return s.db.Save(vm).Error
+}
+
+// ClaimStandbyVM atomically finds a standby slot for the given GPU model and marks it claimed.
+// Returns nil if none available.
+func (s *StateManager) ClaimStandbyVM(gpuModel string) (*StandbyVM, error) {
+	var vm StandbyVM
+	err := s.db.Where("gpu_model = ? AND status = ? AND expires_at > ?", gpuModel, "standby", time.Now()).
+		Order("created_at asc").First(&vm).Error
+	if err != nil {
+		return nil, err
+	}
+	vm.Status = "claimed"
+	return &vm, s.db.Save(&vm).Error
+}
+
+// ListStandbyVMs returns all standby slots filtered by status.
+func (s *StateManager) ListStandbyVMs(status string) ([]StandbyVM, error) {
+	var vms []StandbyVM
+	return vms, s.db.Where("status = ?", status).Find(&vms).Error
+}
+
+// SaveMetric persists a training metric record to the database.
+func (s *StateManager) SaveMetric(m *TrainingMetricRecord) error {
+	return s.db.Create(m).Error
+}
+
+// GetMetrics returns all persisted metrics for a job ordered by step.
+func (s *StateManager) GetMetrics(jobID string) ([]TrainingMetricRecord, error) {
+	var rows []TrainingMetricRecord
+	return rows, s.db.Where("job_id = ?", jobID).Order("step asc").Find(&rows).Error
 }
 
 // Close closes the state manager
