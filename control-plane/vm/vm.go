@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bluequbit/faas/control-plane/akash"
+	modalclient "github.com/bluequbit/faas/control-plane/modal"
 	"github.com/bluequbit/faas/control-plane/state"
 	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
@@ -31,6 +32,7 @@ import (
 type VMManager struct {
 	stateManager *state.StateManager
 	akashClient  *akash.Client
+	modalClient  *modalclient.Client
 	logger       *logrus.Logger
 	vmDir        string
 	warmPoolSize int
@@ -69,14 +71,15 @@ type VMConfig struct {
 
 // ComputeRequest describes what kind of compute a deployment or job needs.
 type ComputeRequest struct {
-	HardwareType    string // "cpu" | "gpu"
-	GPUModel        string // e.g. "a100", "t4"
-	DockerImage     string // for Akash GPU containers
+	HardwareType    string            // "cpu" | "gpu"
+	GPUModel        string            // e.g. "a100", "t4"
+	DockerImage     string            // container image to run
 	Memory          int
 	CPU             int
 	JobID           string
 	ExecutionID     string
 	ControlPlaneURL string
+	ExtraEnv        map[string]string // additional env vars injected into the container
 }
 
 // NewVMManager creates a new VM manager
@@ -98,6 +101,7 @@ func NewVMManager(stateManager *state.StateManager, logger *logrus.Logger) (*VMM
 	manager := &VMManager{
 		stateManager: stateManager,
 		akashClient:  akash.NewClient(logger),
+		modalClient:  modalclient.NewClient(logger),
 		logger:       logger,
 		vmDir:        vmDir,
 		warmPoolSize: warmPoolSize,
@@ -569,6 +573,63 @@ func (m *VMManager) CloseAkashVM(dseq string) error {
 	return m.stateManager.DeleteVM(dseq)
 }
 
+// GetModalVM provisions a GPU sandbox on Modal for a training/RL job.
+// The sandbox runs docker_image with envVars injected and calls back to
+// controlPlaneURL/api/executions/{executionID}/complete when it exits.
+func (m *VMManager) GetModalVM(jobID, executionID, gpuModel, dockerImage, controlPlaneURL string, extraEnv map[string]string) (*state.VM, error) {
+	if gpuModel == "" {
+		gpuModel = "a100"
+	}
+	if dockerImage == "" {
+		dockerImage = "ghcr.io/shubham-rasal/skyscale/skyscale-trainer:latest"
+	}
+
+	env := map[string]string{
+		"JOB_ID":            jobID,
+		"EXECUTION_ID":      executionID,
+		"CONTROL_PLANE_URL": controlPlaneURL,
+	}
+	for k, v := range extraEnv {
+		env[k] = v
+	}
+
+	result, err := m.modalClient.Submit(modalclient.JobParams{
+		JobID:       jobID,
+		ExecutionID: executionID,
+		DockerImage: dockerImage,
+		GPUModel:    gpuModel,
+		EnvVars:     env,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("modal submit: %w", err)
+	}
+
+	vm := &state.VM{
+		ID:             result.SandboxID,
+		Status:         "busy",
+		CreatedAt:      time.Now(),
+		LastUsed:       time.Now(),
+		HardwareType:   "gpu",
+		GPUModel:       gpuModel,
+		ModalSandboxID: result.SandboxID,
+		Provider:       "modal",
+	}
+	if err := m.stateManager.SaveVM(vm); err != nil {
+		m.logger.Errorf("Failed to save Modal VM to state: %v", err)
+	}
+
+	m.logger.Infof("Provisioned Modal sandbox %s for job %s (gpu=%s)", result.SandboxID, jobID, gpuModel)
+	return vm, nil
+}
+
+// StopModalVM terminates a Modal sandbox and removes it from state.
+func (m *VMManager) StopModalVM(sandboxID string) error {
+	if err := m.modalClient.StopSandbox(sandboxID); err != nil {
+		m.logger.Errorf("Failed to stop Modal sandbox %s: %v", sandboxID, err)
+	}
+	return m.stateManager.DeleteVM(sandboxID)
+}
+
 // ListVMs lists all VMs
 func (m *VMManager) ListVMs() ([]state.VM, error) {
 	return m.stateManager.ListVMs()
@@ -579,7 +640,8 @@ func (m *VMManager) GetVMByID(id string) (*state.VM, error) {
 	return m.stateManager.GetVM(id)
 }
 
-// GetCompute allocates CPU (Firecracker warm pool) or GPU (Akash) from a single entry point.
+// GetCompute allocates CPU (Firecracker warm pool) or GPU from a single entry point.
+// GPU provider is selected via GPU_PROVIDER env var: "modal" (default) or "akash".
 func (m *VMManager) GetCompute(req ComputeRequest) (*state.VM, error) {
 	if req.HardwareType == "gpu" {
 		jobID := req.JobID
@@ -590,7 +652,14 @@ func (m *VMManager) GetCompute(req ComputeRequest) (*state.VM, error) {
 		if execID == "" {
 			execID = jobID
 		}
-		return m.GetAkashVM(jobID, execID, req.GPUModel, req.DockerImage, req.ControlPlaneURL)
+		provider := os.Getenv("GPU_PROVIDER")
+		if provider == "" {
+			provider = "modal"
+		}
+		if provider == "akash" {
+			return m.GetAkashVM(jobID, execID, req.GPUModel, req.DockerImage, req.ControlPlaneURL)
+		}
+		return m.GetModalVM(jobID, execID, req.GPUModel, req.DockerImage, req.ControlPlaneURL, req.ExtraEnv)
 	}
 	vm, err := m.GetVM()
 	if err != nil && os.Getenv("DAEMON_PATH") != "" {
@@ -601,13 +670,16 @@ func (m *VMManager) GetCompute(req ComputeRequest) (*state.VM, error) {
 	return vm, err
 }
 
-// ReleaseCompute returns compute to the warm pool (CPU) or idle pool (GPU).
+// ReleaseCompute returns compute to the warm pool (CPU) or terminates GPU sandbox.
 func (m *VMManager) ReleaseCompute(vmID string) error {
 	vm, err := m.stateManager.GetVM(vmID)
 	if err != nil {
 		return err
 	}
 	if vm.HardwareType == "gpu" {
+		if vm.Provider == "modal" {
+			return m.StopModalVM(vmID)
+		}
 		return m.ReturnAkashVM(vmID)
 	}
 	return m.ReturnVM(vmID)
