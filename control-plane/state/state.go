@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
@@ -73,6 +73,8 @@ type VM struct {
 	AkashDeploymentID string // dseq if Akash-provisioned, empty for Firecracker
 	ProviderAddr      string // Akash provider address
 	DaemonPort        int    // external port for daemon (Akash forwarded port)
+	ModalSandboxID    string // Modal sandbox ID if Modal-provisioned
+	Provider          string // "akash" | "modal" | "" (Firecracker)
 }
 
 // Sandbox represents a long-lived isolated execution environment for AI agents
@@ -117,6 +119,34 @@ type StandbyVM struct {
 	Status       string `gorm:"index"` // standby | claimed | expired
 	CreatedAt    time.Time
 	ExpiresAt    time.Time
+}
+
+// Trajectory stores one rollout step for the RL experience buffer.
+type Trajectory struct {
+	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	RunID     string    `gorm:"index"                   json:"run_id"`
+	ProblemID string    `json:"problem_id"`
+	Prompt    string    `json:"prompt"`
+	Code      string    `json:"code"`
+	Reward    float64   `json:"reward"`
+	Done      bool      `json:"done"`
+	StepN     int       `json:"step_n"`
+	Consumed  bool      `gorm:"index"                   json:"-"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// RLRun tracks a distributed RL training run (coordinator + workers + trainer).
+type RLRun struct {
+	ID              string    `gorm:"primaryKey"`
+	Status          string    // starting | running | stopped | completed
+	BaseModel       string
+	NumWorkers      int
+	GPUModel        string
+	PolicyServerURL string
+	TrainerExecID   string
+	WorkerExecIDs   string // JSON array of execution IDs
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // TrainingMetricRecord persists a single training step metric to SQLite.
@@ -205,7 +235,7 @@ func NewStateManager(logger *logrus.Logger) (*StateManager, error) {
 	}
 
 	// Auto migrate the schema
-	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{}, &Deployment{}, &TrainingMetricRecord{}, &StandbyVM{}, &JobQueueItem{})
+	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{}, &Deployment{}, &TrainingMetricRecord{}, &StandbyVM{}, &JobQueueItem{}, &Trajectory{}, &RLRun{})
 	if err != nil {
 		return nil, err
 	}
@@ -460,6 +490,54 @@ func (s *StateManager) SaveMetric(m *TrainingMetricRecord) error {
 func (s *StateManager) GetMetrics(jobID string) ([]TrainingMetricRecord, error) {
 	var rows []TrainingMetricRecord
 	return rows, s.db.Where("job_id = ?", jobID).Order("step asc").Find(&rows).Error
+}
+
+// SaveTrajectory saves a trajectory to the experience buffer.
+func (s *StateManager) SaveTrajectory(t *Trajectory) error {
+	return s.db.Create(t).Error
+}
+
+// SampleTrajectories returns up to n unconsumed trajectories for a run and marks them consumed.
+func (s *StateManager) SampleTrajectories(runID string, n int) ([]Trajectory, error) {
+	var rows []Trajectory
+	err := s.db.Where("run_id = ? AND consumed = ?", runID, false).
+		Order("created_at asc").Limit(n).Find(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return rows, err
+	}
+	ids := make([]uint, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID
+	}
+	s.db.Model(&Trajectory{}).Where("id IN ?", ids).Update("consumed", true)
+	return rows, nil
+}
+
+// BufferSize returns the number of unconsumed trajectories for a run.
+func (s *StateManager) BufferSize(runID string) (int64, error) {
+	var count int64
+	err := s.db.Model(&Trajectory{}).Where("run_id = ? AND consumed = ?", runID, false).Count(&count).Error
+	return count, err
+}
+
+// SaveRLRun persists an RL run record.
+func (s *StateManager) SaveRLRun(r *RLRun) error {
+	return s.db.Save(r).Error
+}
+
+// GetRLRun retrieves an RL run by ID.
+func (s *StateManager) GetRLRun(id string) (*RLRun, error) {
+	var r RLRun
+	if err := s.db.First(&r, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// ListRLRuns returns all RL runs ordered newest first.
+func (s *StateManager) ListRLRuns() ([]RLRun, error) {
+	var runs []RLRun
+	return runs, s.db.Order("created_at desc").Find(&runs).Error
 }
 
 // Close closes the state manager
