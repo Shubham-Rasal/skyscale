@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { Execution, ExecutionContext } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -25,8 +26,8 @@ function durationStr(ms: number) {
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
 }
 
-function ActiveRow({ ctx }: { ctx: ExecutionContext }) {
-  const elapsed = Date.now() - new Date(ctx.StartTime).getTime()
+function ActiveRow({ ctx, now }: { ctx: ExecutionContext; now: number }) {
+  const elapsed = now - new Date(ctx.StartTime).getTime()
   return (
     <tr className="border-b border-white/5 hover:bg-white/5 transition-colors">
       <td className="px-4 py-3 font-mono text-xs text-slate-400">{ctx.RequestID.slice(0, 8)}</td>
@@ -64,8 +65,14 @@ function RecentRow({ exec }: { exec: Execution }) {
 }
 
 export function JobQueue({ active, recent }: { active: ExecutionContext[]; recent: Execution[] }) {
+  const [now, setNow] = useState(() => Date.now())
   const rows = [...active.map(a => ({ type: 'active' as const, data: a })),
                 ...recent.map(r => ({ type: 'recent' as const, data: r }))]
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <Card className="bg-slate-900 border-slate-700/50">
@@ -101,7 +108,7 @@ export function JobQueue({ active, recent }: { active: ExecutionContext[]; recen
               )}
               {rows.map((r, i) =>
                 r.type === 'active'
-                  ? <ActiveRow key={i} ctx={r.data as ExecutionContext} />
+                  ? <ActiveRow key={i} ctx={r.data as ExecutionContext} now={now} />
                   : <RecentRow key={i} exec={r.data as Execution} />
               )}
             </tbody>

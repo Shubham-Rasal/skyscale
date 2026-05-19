@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { WSPayload } from '@/types'
-import { WS_URL } from '@/lib/api'
+import { getRealtimeURL } from '@/lib/api'
 
 const EMPTY: WSPayload = {
   active: [],
@@ -20,7 +20,19 @@ export function useRealtimeStream() {
 
   useEffect(() => {
     function connect() {
-      const ws = new WebSocket(WS_URL)
+      const url = getRealtimeURL()
+      if (!url) {
+        setConnected(false)
+        return
+      }
+
+      let ws: WebSocket
+      try {
+        ws = new WebSocket(url)
+      } catch {
+        setConnected(false)
+        return
+      }
       wsRef.current = ws
 
       ws.onopen = () => setConnected(true)
@@ -45,7 +57,7 @@ export function useRealtimeStream() {
     connect()
 
     return () => {
-      timerRef.current && clearTimeout(timerRef.current)
+      if (timerRef.current) clearTimeout(timerRef.current)
       wsRef.current?.close()
     }
   }, [])

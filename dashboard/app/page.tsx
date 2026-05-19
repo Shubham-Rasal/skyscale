@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { useRealtimeStream } from '@/hooks/useRealtimeStream'
 import { Sidebar } from '@/components/Sidebar'
 import { TrainingTable } from '@/components/TrainingTable'
@@ -8,9 +9,13 @@ import { SubmitJobDialog } from '@/components/SubmitJobDialog'
 import { TrainingChart } from '@/components/TrainingChart'
 import { GPUMetrics } from '@/components/GPUMetrics'
 import { JobDetailDrawer } from '@/components/JobDetailDrawer'
+import { AuthStatus } from '@/components/AuthStatus'
+import { authClient } from '@/lib/auth-client'
 
 export default function HomePage() {
+  const router = useRouter()
   const { data, connected } = useRealtimeStream()
+  const { data: session, isPending: sessionPending } = authClient.useSession()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [showMetrics, setShowMetrics] = useState(false)
@@ -18,6 +23,15 @@ export default function HomePage() {
 
   const activeGPU = data.vm_pool.filter(v => v.HardwareType === 'gpu').length
   const hasTrainingMetrics = Object.keys(data.training_metrics).length > 0
+  const canLaunchGPU = Boolean(session)
+
+  function openNewRun() {
+    if (!canLaunchGPU) {
+      router.push('/login?next=/')
+      return
+    }
+    setDialogOpen(true)
+  }
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)' }}>
@@ -90,22 +104,25 @@ export default function HomePage() {
             </button>
           )}
 
+          <AuthStatus />
+
           <SubmitJobDialog
             open={dialogOpen}
             onOpenChange={setDialogOpen}
             onSubmitted={() => setDialogOpen(false)}
             trigger={
               <button
-                onClick={() => setDialogOpen(true)}
+                onClick={openNewRun}
+                disabled={sessionPending}
                 style={{
                   padding: '7px 14px',
-                  background: 'var(--accent)',
+                  background: sessionPending ? 'rgba(124,92,252,0.5)' : 'var(--accent)',
                   color: 'white',
                   border: 'none',
                   borderRadius: 7,
                   fontSize: 13,
                   fontWeight: 500,
-                  cursor: 'pointer',
+                  cursor: sessionPending ? 'not-allowed' : 'pointer',
                   fontFamily: 'inherit',
                   display: 'flex',
                   alignItems: 'center',
@@ -113,13 +130,13 @@ export default function HomePage() {
                   letterSpacing: '-0.01em',
                   transition: 'background 0.1s',
                 }}
-                onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = 'var(--accent-hover)'}
-                onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'var(--accent)'}
+                onMouseEnter={e => { if (!sessionPending) (e.currentTarget as HTMLButtonElement).style.background = 'var(--accent-hover)' }}
+                onMouseLeave={e => { if (!sessionPending) (e.currentTarget as HTMLButtonElement).style.background = 'var(--accent)' }}
               >
                 <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round">
                   <path d="M5.5 1v9M1 5.5h9"/>
                 </svg>
-                New Run
+                {canLaunchGPU ? 'New Run' : 'Sign in to run'}
               </button>
             }
           />
@@ -198,7 +215,7 @@ export default function HomePage() {
             active={data.active.filter(e => !search || e.FunctionName?.toLowerCase().includes(search.toLowerCase()))}
             recent={data.recent.filter(e => !search || e.FunctionName?.toLowerCase().includes(search.toLowerCase()))}
             trainingMetrics={data.training_metrics}
-            onNewRun={() => setDialogOpen(true)}
+            onNewRun={openNewRun}
             onSelectExecution={setSelectedExec}
           />
           <JobDetailDrawer executionId={selectedExec} onClose={() => setSelectedExec(null)} />

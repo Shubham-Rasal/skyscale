@@ -8,19 +8,21 @@ const NAV = [
     section: 'Lab',
     items: [
       { label: 'Training', href: '/', icon: TrainIcon },
+      { label: 'RL Training', href: '/rl-training', icon: RLIcon },
       { label: 'Templates', href: '/templates', icon: GridIcon },
+      { label: 'FaaS Containers', href: '/faas', icon: FaasIcon },
     ],
   },
   {
     section: 'Compute',
     items: [
       { label: 'On-Demand GPUs', href: '/gpus', icon: GpuIcon },
+      { label: 'Benchmarks', href: '/benchmarks', icon: BenchmarkIcon },
     ],
   },
   {
     section: 'Account',
     items: [
-      { label: 'Keys & Secrets', href: '/keys', icon: KeyIcon },
       { label: 'Settings', href: '/settings', icon: SettingsIcon },
     ],
   },
@@ -167,11 +169,28 @@ export function Sidebar({ connected }: { connected: boolean }) {
 }
 
 // Icons
+function RLIcon({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="7" cy="7" r="2.5"/>
+      <path d="M7 1v2M7 11v2M1 7h2M11 7h2"/>
+      <path d="M3.2 3.2l1.4 1.4M9.4 9.4l1.4 1.4M3.2 10.8l1.4-1.4M9.4 4.6l1.4-1.4"/>
+    </svg>
+  )
+}
 function TrainIcon({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="1,11 5,6 8,8 13,3" />
       <polyline points="10,3 13,3 13,6" />
+    </svg>
+  )
+}
+function FaasIcon({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="10" height="10" rx="2"/>
+      <path d="M5 5h4M5 7h4M5 9h2"/>
     </svg>
   )
 }
@@ -193,11 +212,11 @@ function GpuIcon({ size = 14, color = 'currentColor' }: { size?: number; color?:
     </svg>
   )
 }
-function KeyIcon({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
+function BenchmarkIcon({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="5.5" cy="5.5" r="3.5"/>
-      <path d="M8.5 8.5l4 4M10 7l1.5 1.5"/>
+      <path d="M2 11V7M5.3 11V4M8.7 11V6M12 11V2"/>
+      <path d="M1.5 12.5h11"/>
     </svg>
   )
 }

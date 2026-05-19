@@ -40,7 +40,7 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
   const [artifacts, setArtifacts] = useState<string[]>([])
 
   useEffect(() => {
-    if (!executionId) { setExec(null); return }
+    if (!executionId) return
     let cancelled = false
     const poll = () => {
       if (cancelled) return
@@ -267,44 +267,6 @@ export function JobDetailDrawer({ executionId, onClose }: Props) {
                   </div>
                 )}
               </Section>
-
-              {/* Success check guide */}
-              <Section title="How to verify">
-                <div style={{ fontSize: 12, color: '#6b6b6b', lineHeight: 1.7 }}>
-                  {(() => {
-                    const isPending = exec.Status === 'pending'
-                    const isRunning = exec.Status === 'running'
-                    const isDone = exec.Status === 'completed'
-                    const isFailed = exec.Status === 'failed' || exec.Status === 'error'
-                    const hasDseq = !!(exec.HardwareType === 'gpu' && exec.VMID && /^\d+$/.test(exec.VMID))
-                    return (
-                      <>
-                        <CheckItem ok={hasDseq} pending={!hasDseq && isPending} text="Deployment created on Akash (dseq present)" />
-                        <CheckItem ok={hasDseq} pending={!hasDseq && isPending} text="Bid received and lease created" />
-                        <CheckItem
-                          ok={isDone}
-                          pending={isPending || isRunning}
-                          text={isPending ? 'Waiting for container to start…' : isRunning ? 'Training in progress…' : isDone ? 'Execution completed successfully' : `Execution failed: ${exec.Error || 'see error above'}`}
-                        />
-                        {isFailed && exec.Error && exec.Error.includes('forwardedPorts stayed null') && (
-                          <div style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6 }}>
-                            <span style={{ fontSize: 11, color: '#f59e0b' }}>
-                              Container did not expose port 8081. It may have crashed on startup or the image is still pulling. Check Akash Console for provider logs.
-                            </span>
-                          </div>
-                        )}
-                        {isFailed && exec.Error && !exec.Error.includes('forwardedPorts') && !exec.Error.includes('allocate VM') && (
-                          <div style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6 }}>
-                            <span style={{ fontSize: 11, color: '#f59e0b' }}>
-                              GPU was provisioned correctly. Error is in the container workload.
-                            </span>
-                          </div>
-                        )}
-                      </>
-                    )
-                  })()}
-                </div>
-              </Section>
             </div>
           )}
         </div>
@@ -355,13 +317,3 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
   )
 }
 
-function CheckItem({ ok, pending, text }: { ok: boolean; pending?: boolean; text: string }) {
-  const color = ok ? '#22c55e' : pending ? '#6b6b6b' : '#ef4444'
-  const icon = ok ? '✓' : pending ? '·' : '✗'
-  return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, marginBottom: 4 }}>
-      <span style={{ color, fontSize: 12, marginTop: 1, flexShrink: 0 }}>{icon}</span>
-      <span style={{ fontSize: 12, color: ok ? '#a0a0a0' : pending ? '#5a5a5a' : '#ef4444' }}>{text}</span>
-    </div>
-  )
-}
