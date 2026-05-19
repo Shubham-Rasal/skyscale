@@ -1,525 +1,346 @@
 # Skyscale
 
-**Serverless compute, GPU, and distributed RL post-training for coding agents.** Run code and models without managing servers: CPU workloads on Firecracker microVMs, GPU workloads on decentralized GPU (Akash/Modal), FaaS invocations, persistent sandboxes for agents, and a full async RL training loop where the sandbox *is* the reward environment.
+**Reinforcement Learning as a Service.** Post-train any LLM on any task using distributed async RL — without managing clusters, scheduling workers, or provisioning GPUs. One API call starts the whole pipeline.
 
-## Overview
+---
 
-Skyscale is a **serverless compute platform** with a **GPU path** for training, inference, and long-running services, now extended with a **distributed RL post-training system** for fine-tuning coding LLMs using reinforcement learning from execution feedback (RLEF). You ship functions or container-backed apps; the control plane provisions **CPU** isolation (Firecracker) or **GPU** capacity (Akash/Modal), routes traffic, and tracks state so you focus on code—not clusters or schedulers.
+## What is Skyscale?
 
-At the core is **Lambda-style FaaS**: functions run in isolated micro-VMs, triggered by HTTP or events, with optional async execution and warm pools for lower cold starts.
+Skyscale is an **RLaaS platform**: you bring a base model and a task; Skyscale orchestrates the entire post-training loop across heterogeneous compute. Rollout workers collect experience in parallel on cheap CPU, a policy server serves the live model on GPU, and a trainer continuously updates weights using GRPO — all coordinated by a single control plane you deploy once.
 
-For **GPU**, the same control plane can schedule heavy jobs (e.g. training) and **deployed web workloads** (inference, APIs) onto GPU-backed environments, while **CPU** stays the default for lightweight and bursty work.
+The core insight is that **isolated code execution sandboxes are RL environments**. Every Firecracker microVM is a `step()` function: the agent submits code, the VM executes it against test cases, and the pass rate becomes the reward. No reward model to train. No human labelers. Ground-truth execution feedback at scale.
 
-The **Sandbox API** targets **AI agents**: persistent sessions, multi-step exec, and file I/O in isolated environments—same isolation model, different ergonomics.
-
-The **RL Environment** repurposes Firecracker sandboxes as a Gym-style `step()` function: rollout workers call `reset` to get a coding problem and a fresh VM, submit LLM-generated code via `step` to get a reward (test-case pass rate), and push trajectories to a central buffer for the GPU trainer to consume.
-
-The **Python App SDK** (`skyscale`) lets you declare `App`, `Image`, and decorators for HTTP routes; deployments get a **persistent FastAPI + uvicorn** process (`/serve` on the daemon) and public URLs under **`/proxy/{slug}{path}`**—on CPU or GPU, depending on how you declare hardware in code.
-
-![Architecture Diagram](arch.png)
-
-## Features
-
-### Platform: serverless CPU and GPU
-- **CPU compute** — Firecracker microVMs per invocation or session: strong isolation, predictable serverless semantics
-- **GPU compute** — route eligible workloads to GPU providers (e.g. Akash) for training and inference-class services
-- **Unified control plane** — one API and scheduler story for FaaS jobs, sandboxes, and App deployments
-- **No server management** — you register code or deploy apps; Skyscale maps them to the right hardware class
-
-### Distributed RL Post-Training (RLEF for coding agents)
-- **RL Environment** — Firecracker sandboxes exposed as a Gym-style API (`reset` / `step` / `close`); reward = fraction of test cases passed
-- **Experience Buffer** — central SQLite store of `(prompt, code, reward)` trajectories; push from N workers, sample batches for the trainer
-- **Policy Server** — vLLM serving the base model (e.g. Qwen3-0.6B) on a GPU; workers call `/v1/chat/completions` to generate code
-- **Rollout Workers** — stateless CPU processes running in parallel; each worker loops: get problem → generate code → execute → push trajectory
-- **GRPO Trainer** — group-relative policy optimization on GPU; reads buffer batches, updates the model, saves checkpoints to the artifact store
-- **RL Coordinator** — single API to start/stop/monitor a full distributed run: `POST /api/rl/runs` spawns everything; `GET /api/rl/runs/{id}` returns live metrics
-- **Auto-provisioned VM assets** — kernel and rootfs downloaded automatically to `/opt/skyscale/vm/` on first use; overridable via `FAAS_VM_KERNEL_PATH` / `FAAS_VM_ROOTFS_PATH`
-
-### FaaS (Serverless Functions)
-- **Python Function Support**: Lambda-style functions with AWS Lambda-compatible `event`/`context` interface
-- **CLI & API Management**: REST API and command-line interface for function management
-- **Isolated Execution**: Each function runs in a secure Firecracker micro-VM
-- **Warm VM Pool**: Pre-warmed VMs reduce cold start latency
-- **Async Execution**: Fire-and-forget invocations with result polling
-- **State Persistence**: SQLite for function metadata and execution history
-
-### Sandbox API (AI agents on serverless compute)
-- **Persistent Sessions**: A sandbox is a long-lived VM exclusively held for one agent session
-- **Multi-language Execution**: Run Python 3 or Bash code synchronously
-- **Persistent Filesystem**: Files written in one exec call are available in the next
-- **File Upload/Download**: Transfer files to and from the sandbox workspace
-- **TTL-based Cleanup**: Sandboxes auto-expire and their VMs are reclaimed
-- **Python SDK**: `SandboxClient` with context-manager support for easy agent integration
-
-### Python App SDK (HTTP on durable CPU or GPU workloads)
-- **`skyscale` package**: `App`, `Image.pip_install(...)`, `@app.function` / `@app.cls`, `@skyscale.web_endpoint`, `@skyscale.enter`
-- **Deployments API**: `POST /api/deployments` with a JSON spec (per web route); response includes a public **`url`**
-- **Routing**: `GET`/`POST` `/proxy/{slug}{path}` reverse-proxies to the workload (CPU or GPU)
-- **CLI**: `skyscale deploy myapp.py` introspects the file and posts specs; `skyscale deploy myfunc/` still registers a classic FaaS function from `handler.py`
-- **Environment**: set `SKYSCALE_PUBLIC_BASE` (e.g. `http://api.example.com:8080`) so returned URLs are correct; `SKYSCALE_SDK_PYTHON` points the CLI at the repo’s `sdk/python` if auto-detection fails
-
-## Architecture
-
-Serverless workloads flow from clients and SDKs through the control plane to **CPU VMs (Firecracker)** or **GPU deployments (Akash)**, depending on hardware selection.
+This follows the architecture of distributed async RL systems like Echo-2 and INTELLECT-2 — cheap workers collecting trajectories asynchronously, decoupled from a GPU trainer consuming them in batches — but exposes the whole thing as a managed service behind a REST API.
 
 ```
-AI Agent / SDK
-     |
-     v
-Sandbox HTTP API   (/api/sandboxes/*)
-     |
-     v
-SandboxManager     (control-plane/sandbox/)
-     |
-     v
-VMManager          (control-plane/vm/)  — CPU pool + GPU (Akash)
-     |
-     v
-Firecracker VM  |  GPU host (Akash)
-     |
-In-VM Daemon       (cmd/daemon/) — FaaS `/execute`, `/serve` (FastAPI), sandbox exec, file I/O
+One API call:  POST /api/rl/runs  { base_model, num_workers, gpu_model }
+
+                        │
+                        ▼
+              ┌─────────────────────┐
+              │    RL Coordinator   │
+              └──────────┬──────────┘
+                         │  spawns
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+   Policy Server    N × Workers     Trainer
+   (vLLM, GPU)      (CPU, async)    (GRPO, GPU)
+          │              │              │
+          │   generate   │   execute    │   update
+          └──────────────┴──────────────┘
+                    Experience Buffer
+                    (trajectories DB)
 ```
 
-### Components
+Workers continuously pull problems, generate code via the policy server, execute in isolated VMs, and push `(prompt, code, reward)` trajectories to the buffer. The trainer samples batches and runs policy gradient updates. The loop runs until you stop it or hit a step budget.
 
-**Control Plane**
-- **Function Registry** — function metadata, code, configurations
-- **VM Manager** — Firecracker VM lifecycle and warm pool; GPU provisioning via Akash when requested
-- **Scheduler** — dispatches invocations to CPU VMs or GPU backends (e.g. Akash) per job options
-- **Sandbox Manager** — creates/manages long-lived sandbox sessions
-- **State Manager** — SQLite state for functions, executions, VMs, sandboxes
-- **API Server** — REST API (FaaS + Sandbox + Deployments)
-- **Deployment manager** — long-lived web routes, proxy to workloads (`control-plane/deployment/`)
-- **Auth Service** — API key management
+---
 
-**Execution environment**
-- **Firecracker micro-VMs (CPU)** — hardware-level isolation for serverless function and sandbox workloads
-- **GPU hosts (Akash)** — for training and GPU-class App deployments when hardware selects GPU
-- **In-VM Daemon (Go)** — FaaS execution, `/serve` for deployed apps (uvicorn), sandbox sync exec
-- **Persistent Workspace** — `/sandbox/workspace` inside each VM, persists across exec calls
-- **CNI Networking** — ptp + tc-redirect-tap, VMs on 192.168.1.0/24
+## Core concepts
 
-**SDK**
-- **Python** — `skyscale_sandbox` (Sandbox API client), `skyscale` (App / deploy DSL + `skyscale._deploy` spec emission)
+### The RL Environment
 
-## Getting Started
+Every coding problem is a Gym-like episode. The environment API is three HTTP calls:
 
-### Prerequisites
-- Linux (required for Firecracker + KVM on the control plane host)
-- GPU-related features (Akash) need a configured Akash wallet / provider path as in your deployment setup
-- Go 1.21+
-- Python 3.8+ (for SDK and function runtime)
-- Firecracker binary at `/usr/local/bin/firecracker`
-- CNI plugins: `ptp`, `tc-redirect-tap` in `/opt/cni/bin`
+```
+POST /api/rl/env/reset   →  { sandbox_id, problem_id, prompt, test_cases }
+POST /api/rl/env/step    →  { reward, passed_tests, total_tests, stdout, stderr }
+POST /api/rl/env/close   →  204
+```
 
-### Build
+`reset` spins up a fresh Firecracker microVM and samples a problem. `step` uploads the generated code, executes it against test cases inside the VM, and returns a reward between 0 and 1. `close` destroys the VM. Each episode is fully isolated — no shared state between workers, no sandbox reuse.
+
+**Reward function:**
+```
+reward = passed_tests / total_tests
+       − 0.0001 × max(0, len(code) − 500)   # discourages bloated solutions
+```
+
+### The Experience Buffer
+
+A central store of trajectories decouples data collection from training. Workers push at their own rate; the trainer samples batches independently. This async design means you can scale workers and trainer independently — add more workers to collect faster, upgrade to a bigger GPU for faster updates, without touching anything else.
+
+```
+POST /api/rl/buffer/push    { run_id, prompt, code, reward, done }
+POST /api/rl/buffer/sample  { run_id, batch_size }  →  [ trajectory, ... ]
+GET  /api/rl/buffer/stats   ?run_id=<id>            →  { size }
+```
+
+### The Policy Server
+
+A vLLM inference server running the current model weights, served on GPU. Workers call the standard OpenAI-compatible `/v1/chat/completions` endpoint. When the trainer saves a checkpoint, it signals the policy server to hot-swap weights — so workers are always generating from the latest policy without restarts.
+
+### The GRPO Trainer
+
+Group Relative Policy Optimization (GRPO) — the same algorithm used by DeepSeek-R1 — runs on GPU, reading batches from the buffer and computing policy gradient updates. Group relative advantage normalizes rewards within each batch, which is stable and doesn't require a separate value network.
+
+### The Coordinator
+
+`POST /api/rl/runs` is the single entry point. It spawns the policy server, trainer, and N rollout workers as GPU/CPU jobs on Modal (or Akash), records the run, and starts streaming metrics. `GET /api/rl/runs/{id}` returns live status, per-worker health, buffer size, and the full metrics history.
+
+---
+
+## Quick start
+
+### 1. Deploy the control plane
+
+The control plane is a single Go binary. Build and run it on any Linux server with Firecracker installed:
 
 ```bash
-# Control plane (needs Linux or cross-compile targets that match your Firecracker hosts)
 cd control-plane
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o skyscale-cp .
-
-# In-VM daemon (paths are relative to the repo root)
-cd ../cmd/daemon
-go build -o skyscale-daemon .
-# Optional: static Linux binary for VM images
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o skyscale-daemon-linux .
-
-# CLI
-cd ../cli
-go build -o skyscale .
-```
-
-### Configuration
-
-Create `control-plane/.env`:
-
-```env
-PORT=8080
-DB_PATH=/path/to/skyscale.db
-FAAS_VM_KERNEL_PATH=/path/to/vmlinux
-FAAS_VM_ROOTFS_PATH=/path/to/rootfs.ext4
-FAAS_VM_MEMORY_MB=128
-FAAS_VM_CPU_COUNT=1
-API_KEY_SALT=your-salt
-JWT_SECRET=your-secret
-```
-
-### Start the control plane
-
-```bash
 ./skyscale-cp
 ```
 
----
-
-## App deployments (Modal-style)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/deployments` | Create one **App** deployment (one web route per POST body) |
-| `GET` | `/api/deployments` | List deployments |
-| * | `/proxy/{slug}{path}` | Reverse-proxy to the workload backing that deployment |
-
-Set `SKYSCALE_PUBLIC_BASE` on the control plane so deployment responses use the correct origin.
-
-Minimal example (`examples/skyscale_web_app.py`):
-
-Emit deployment JSON (inspect only):
+Or use the pre-built binary:
 
 ```bash
-pip install -e sdk/python   # installs skyscale + skyscale_sandbox
-PYTHONPATH=sdk/python python3 -m skyscale._deploy examples/skyscale_web_app.py | jq .
+# On your server (Linux, x86_64)
+curl -O https://github.com/Shubham-Rasal/skyscale/releases/latest/download/skyscale-cp
+chmod +x skyscale-cp && ./skyscale-cp
 ```
 
-Deploy with the CLI (control plane must be running; needs Linux + Firecracker for CPU VMs unless you use your own integration):
+Required env:
+```env
+PORT=8080
+MODAL_TOKEN_ID=<your-modal-token-id>
+MODAL_TOKEN_SECRET=<your-modal-token-secret>
+HF_TOKEN=<your-huggingface-token>
+```
+
+VM assets (kernel + rootfs) are downloaded automatically to `/opt/skyscale/vm/` on first sandbox creation. Override with `FAAS_VM_KERNEL_PATH` and `FAAS_VM_ROOTFS_PATH`.
+
+### 2. Start an RL run
 
 ```bash
-skyscale --api-url http://localhost:8080 deploy examples/skyscale_web_app.py
-```
-
-Call the returned URL, e.g.:
-
-```bash
-curl -s -X POST 'http://localhost:8080/proxy/demo-web--process/process' \
-  -H 'Content-Type: application/json' \
-  -d '{"data":{"a":[1,2,3],"b":[3,2,1]}}'
-```
-
-**Local daemon-only check (no Firecracker)** — useful on macOS: build `cmd/daemon`, run it on `:8081`, then `POST /serve` with the JSON from `skyscale._deploy` and hit the uvicorn port directly to validate FastAPI wiring.
-
----
-
-## GPU training jobs
-
-The dashboard can submit containerized training jobs to GPU providers such as
-Akash and Hugging Face Jobs. See `docs/ml-training-jobs.md` for the custom
-training image contract, metric callbacks, and examples for submitting a new ML
-training job.
-
----
-
-## Distributed RL Post-Training
-
-Skyscale includes a full **async distributed RL system** for post-training coding LLMs via reinforcement learning from execution feedback (RLEF), following the Echo-2 / INTELLECT-2 architecture. The Firecracker sandbox is the RL environment: code generated by a policy LLM is executed inside an isolated VM, and the fraction of test cases passed becomes the reward signal.
-
-### Architecture
-
-```
-POST /api/rl/runs
-        │
-        ▼
-RL Coordinator  (control-plane/api/rl.go)
-   ├── N × Rollout Worker jobs  (CPU — training/rl-worker/worker.py)
-   ├── 1 × Policy Server job    (GPU — vLLM serving base model)
-   └── 1 × Trainer job          (GPU — GRPO — training/rl-trainer/trainer.py)
-
-Rollout Worker loop (runs in parallel, N workers)
-   │
-   ├─ POST /api/rl/env/reset     → problem + sandbox_id  (spins up Firecracker VM)
-   ├─ POST {policy_url}/v1/chat/completions → LLM-generated Python code
-   ├─ POST /api/rl/env/step      → executes code in VM, returns reward (pass rate)
-   ├─ POST /api/rl/buffer/push   → trajectory → Experience Buffer (SQLite)
-   └─ POST /api/rl/env/close     → destroy VM
-
-Trainer loop (GPU)
-   ├─ POST /api/rl/buffer/sample → batch of trajectories
-   ├─ GRPO gradient update
-   ├─ POST /api/training/metrics → step, loss, episode_reward
-   └─ POST /api/executions/{id}/artifacts → checkpoint upload
-```
-
-### RL API reference
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/rl/runs` | Start a new distributed RL run (spawns policy server, trainer, N workers) |
-| `GET`  | `/api/rl/runs` | List all RL runs |
-| `GET`  | `/api/rl/runs/{id}` | Run status, worker statuses, live metrics array, buffer size |
-| `DELETE` | `/api/rl/runs/{id}` | Stop a run and terminate all child jobs |
-| `POST` | `/api/rl/env/reset` | Get a coding problem + fresh Firecracker sandbox |
-| `POST` | `/api/rl/env/step` | Execute code in sandbox; returns reward, pass counts, stdout/stderr |
-| `POST` | `/api/rl/env/close` | Destroy sandbox VM after episode |
-| `GET`  | `/api/rl/env/problems` | List available problems |
-| `POST` | `/api/rl/buffer/push` | Append a trajectory `{run_id, prompt, code, reward, done}` |
-| `POST` | `/api/rl/buffer/sample` | Dequeue a batch of unconsumed trajectories |
-| `GET`  | `/api/rl/buffer/stats` | Buffer size (unconsumed count) for a run |
-
-### Reward function
-
-```
-reward = passed_tests / total_tests          # 0.0 – 1.0
-       - 0.0001 × max(0, len(code) - 500)   # length penalty
-```
-
-Syntax errors and timeouts receive reward 0.0. The current problem set is HumanEval-style problems (`he-1` through `he-5`) embedded in the control plane; difficulty filtering is supported via the `difficulty` field on `reset`.
-
-### Running the end-to-end test
-
-The script `scripts/modal_pipeline_test.py` exercises the full pipeline using Modal for GPU/CPU compute and the VPS control plane:
-
-```bash
-# Requires: pip install modal requests
-# Modal credentials in env or ~/.modal.toml
-
-HF_TOKEN=<your-token> python3 scripts/modal_pipeline_test.py
-```
-
-What it does:
-1. Starts a vLLM policy server on a Modal a10g GPU (`Qwen/Qwen3-0.6B`)
-2. Creates an RL run on the control plane
-3. Starts 2 CPU rollout workers; waits for the buffer to fill (≥4 trajectories)
-4. Starts a GRPO trainer on a Modal a10g GPU; waits for 3 training steps
-5. Prints final buffer size, step, loss, and reward; cleans up all sandboxes
-
-### VM asset auto-provisioning
-
-On first sandbox creation the control plane downloads the Firecracker kernel and rootfs into `/opt/skyscale/vm/` if they are not present:
-
-| Asset | Source |
-|-------|--------|
-| `vmlinux-5.10.225` | AWS S3 Firecracker CI bucket |
-| `rootfs.ext4` | Custom Alpine Linux image with Skyscale daemon baked in |
-
-Override with `FAAS_VM_KERNEL_PATH` and `FAAS_VM_ROOTFS_PATH` env vars to use pre-downloaded assets.
-
-The rootfs is built with `scripts/build_daemon_rootfs.sh`: it creates an Alpine Linux ext4 image containing the compiled `cmd/daemon` binary registered as an OpenRC service, so the daemon starts automatically at VM boot and listens on `:8081`.
-
-### Key files
-
-| Path | Role |
-|------|------|
-| `control-plane/api/rl.go` | RL coordinator — run lifecycle, spawns jobs |
-| `control-plane/api/rl_env.go` | RL environment server — reset/step/close handlers, problem dataset |
-| `control-plane/api/rl_buffer.go` | Experience buffer — push/sample/stats handlers |
-| `control-plane/state/state.go` | `Trajectory` and `RLRun` DB models |
-| `control-plane/vm/config.go` | VM asset paths with auto-download fallback |
-| `training/rl-worker/worker.py` | Rollout worker loop |
-| `training/rl-trainer/trainer.py` | GRPO trainer |
-| `scripts/modal_pipeline_test.py` | End-to-end pipeline test on Modal |
-| `scripts/build_daemon_rootfs.sh` | Builds the Alpine rootfs with daemon |
-
----
-
-## FaaS Usage
-
-Register a function:
-```bash
-curl -X POST localhost:8080/api/functions \
+curl -X POST http://your-server:8080/api/rl/runs \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "greet",
-    "runtime": "python3",
-    "code": "def handle(event, context):\n    return {\"message\": \"Hello, \" + event[\"name\"]}",
-    "timeout": 30,
-    "memory": 128
+    "base_model":   "Qwen/Qwen3-0.6B",
+    "num_workers":  4,
+    "gpu_model":    "a10g"
   }'
 ```
 
-Invoke it:
-```bash
-curl -X POST localhost:8080/api/functions/name/greet/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"name": "world"}, "sync": true}'
+Response:
+```json
+{
+  "run_id":  "rl-a3f91c2b",
+  "status":  "starting"
+}
 ```
+
+The control plane immediately starts provisioning: a vLLM policy server on a GPU, 4 rollout workers on CPU, and a GRPO trainer on GPU.
+
+### 3. Watch it train
+
+```bash
+# Poll run status
+curl http://your-server:8080/api/rl/runs/rl-a3f91c2b
+
+# Stream metrics from the dashboard
+open http://your-server:3000/rl-training
+```
+
+### 4. Stop when done
+
+```bash
+curl -X DELETE http://your-server:8080/api/rl/runs/rl-a3f91c2b
+```
+
+Checkpoints are saved to the artifact store at each `CHECKPOINT_EVERY` step.
 
 ---
 
-## Sandbox API
+## End-to-end pipeline test
 
-### REST API
+`scripts/modal_pipeline_test.py` verifies the full pipeline end-to-end using Modal for GPU/CPU sandboxes:
+
+```bash
+pip install modal requests
+HF_TOKEN=<token> python3 scripts/modal_pipeline_test.py
+```
+
+It runs through all four stages — policy server health, RL run creation, buffer fill from 2 workers, and 3 GRPO training steps — and prints a pass/fail report with final metrics.
+
+---
+
+## API reference
+
+### RL Runs
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/sandboxes` | Create a new sandbox |
-| `GET` | `/api/sandboxes` | List all sandboxes |
-| `GET` | `/api/sandboxes/{id}` | Get sandbox status |
-| `DELETE` | `/api/sandboxes/{id}` | Destroy sandbox |
+| `POST` | `/api/rl/runs` | Start a distributed RL run — spawns policy server, trainer, N workers |
+| `GET` | `/api/rl/runs` | List all runs |
+| `GET` | `/api/rl/runs/{id}` | Run status, worker health, buffer size, metrics history |
+| `DELETE` | `/api/rl/runs/{id}` | Stop run and terminate all child jobs |
+
+### RL Environment
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/rl/env/reset` | Allocate a Firecracker VM + sample a problem |
+| `POST` | `/api/rl/env/step` | Execute code in VM, return reward and test results |
+| `POST` | `/api/rl/env/close` | Destroy VM |
+| `GET` | `/api/rl/env/problems` | List available problems |
+
+### Experience Buffer
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/rl/buffer/push` | Push a trajectory `{ run_id, prompt, code, reward, done }` |
+| `POST` | `/api/rl/buffer/sample` | Dequeue a batch of unconsumed trajectories |
+| `GET` | `/api/rl/buffer/stats` | Buffer size for a run |
+
+### Training Jobs (GPU)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/training/jobs` | Submit a GPU job (trainer, policy server, or custom) |
+| `GET` | `/api/training/jobs` | List jobs |
+| `GET` | `/api/training/jobs/{id}` | Job status and logs |
+| `POST` | `/api/training/metrics` | Report training metrics from a running job |
+
+### Sandboxes (direct access)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/sandboxes` | Create a persistent sandbox VM |
 | `POST` | `/api/sandboxes/{id}/exec` | Execute code synchronously |
 | `POST` | `/api/sandboxes/{id}/files/{path}` | Upload a file |
 | `GET` | `/api/sandboxes/{id}/files/{path}` | Download a file |
-
-Deploy (Python App DSL) endpoints live under **Deployments** alongside the **`/proxy/...`** route — see **App deployments (Modal-style)** above.
-
-### Quick start (curl)
-
-```bash
-# Create a sandbox
-SB=$(curl -s -X POST localhost:8080/api/sandboxes \
-  -H "Content-Type: application/json" \
-  -d '{"runtime":"python3","ttl_seconds":300}' | jq -r .id)
-
-# Run code
-curl -s -X POST localhost:8080/api/sandboxes/$SB/exec \
-  -d '{"code":"x = 42\nprint(x)"}'
-# → {"stdout":"42\n","exit_code":0,...}
-
-# Write a file and read it back in a later call
-curl -X POST localhost:8080/api/sandboxes/$SB/exec \
-  -d '{"code":"open(\"data.txt\",\"w\").write(\"hello\")"}'
-curl -X POST localhost:8080/api/sandboxes/$SB/exec \
-  -d '{"code":"print(open(\"data.txt\").read())"}'
-# → {"stdout":"hello","exit_code":0,...}
-
-# Upload a file
-curl -X POST localhost:8080/api/sandboxes/$SB/files/input.csv \
-  --data-binary @local_file.csv
-
-# Download a file
-curl localhost:8080/api/sandboxes/$SB/files/output.csv -o output.csv
-
-# Destroy
-curl -X DELETE localhost:8080/api/sandboxes/$SB
-```
-
-### Python SDKs
-
-```bash
-pip install -e sdk/python
-```
-
-#### Sandbox (`skyscale_sandbox`)
-
-```python
-from skyscale_sandbox import SandboxClient
-
-client = SandboxClient("http://localhost:8080")
-
-# Context manager — sandbox is automatically destroyed on exit
-with client.create(runtime="python3", ttl=600) as sb:
-    r = sb.exec("print('hello from Skyscale')")
-    print(r.stdout)  # "hello from Skyscale\n"
-
-    # Files persist across exec calls within the same sandbox
-    sb.exec("open('state.txt','w').write('42')")
-    r = sb.exec("print(open('state.txt').read())")
-    print(r.stdout)  # "42\n"
-
-    # Upload/download files
-    sb.upload_file("data.csv", open("data.csv", "rb").read())
-    r = sb.exec("import csv; print(sum(1 for _ in open('data.csv')))")
-    print(r.stdout)
-
-    output = sb.download_file("result.json")
-```
-
-#### App DSL (`skyscale`)
-
-```python
-import skyscale
-
-app = skyscale.App("demo")
-image = skyscale.Image.pip_install("pandas")
-
-@app.function(image=image)
-@skyscale.web_endpoint(method="POST", path="/process")
-def process(data: dict) -> dict:
-    import pandas as pd
-    return {"result": pd.DataFrame(data).describe().to_dict()}
-```
+| `DELETE` | `/api/sandboxes/{id}` | Destroy sandbox |
 
 ---
 
-## Testing
+## Architecture
 
-### Unit tests
-```bash
-# State models
-go test ./control-plane/state/...
-
-# Sandbox manager
-go test ./control-plane/sandbox/...
-
-# API handlers
-go test ./control-plane/api/...
-
-# Daemon handlers (requires Python3 and Bash installed locally)
-go test ./cmd/daemon/...
-
-# Python SDK
-cd sdk/python && pip install -e . && python -m pytest tests/
+```
+┌──────────────────────────────────────────────────────────┐
+│                     Control Plane                         │
+│                                                           │
+│  RL Coordinator    rl.go       — run lifecycle            │
+│  RL Env Server     rl_env.go   — reset / step / close     │
+│  Experience Buffer rl_buffer.go — push / sample / stats   │
+│  Job Scheduler     scheduler/  — dispatch to Modal/Akash  │
+│  Sandbox Manager   sandbox/    — VM sessions              │
+│  VM Manager        vm/         — Firecracker lifecycle     │
+│  State             state/      — SQLite (runs, trajs, VMs)│
+└────────────────┬─────────────────────────────────────────┘
+                 │
+      ┌──────────┼──────────────┐
+      ▼          ▼              ▼
+ Firecracker   Modal GPU    Akash GPU
+ microVMs      (A10G)       (H100/A100)
+ (RL env,      (policy      (training
+  sandboxes)    server,      jobs)
+               trainer)
 ```
 
-### Integration / E2E tests
-Requires a running control plane with real Firecracker VMs:
-```bash
-SKYSCALE_URL=http://localhost:8080 \
-  go test -tags=integration ./tests/e2e/... -v -timeout 300s
-```
+**Compute backends**
 
-E2E tests cover: full sandbox lifecycle, file persistence, VM isolation between sandboxes, TTL-based cleanup, and concurrent sandboxes.
+- **Firecracker microVMs** — hardware-isolated sandboxes for RL environment episodes and FaaS execution. Each VM boots Alpine Linux with the Skyscale daemon in ~1s, runs code, and is destroyed after the episode.
+- **Modal** — on-demand GPU sandboxes for the policy server (vLLM) and GRPO trainer. Billed per second; no idle cost between runs.
+- **Akash** — decentralized GPU marketplace for longer-running training jobs and deployments.
+
+**Inside each Firecracker VM**
+
+The rootfs is a custom Alpine Linux image (`scripts/build_daemon_rootfs.sh`) with the Skyscale daemon compiled in. The daemon auto-starts via OpenRC at boot, listens on `:8081`, and handles code execution, file I/O, and health checks. VM assets are downloaded automatically on first use:
+
+| Asset | Path |
+|-------|------|
+| Kernel | `/opt/skyscale/vm/vmlinux-5.10.225` |
+| Rootfs | `/opt/skyscale/vm/rootfs.ext4` |
 
 ---
 
-## Project Structure
+## Key source files
+
+| Path | What it does |
+|------|-------------|
+| `control-plane/api/rl.go` | RL coordinator — start/stop/status for distributed runs |
+| `control-plane/api/rl_env.go` | RL environment server — Gym-style reset/step/close, problem dataset |
+| `control-plane/api/rl_buffer.go` | Experience buffer — trajectory storage, batch sampling |
+| `control-plane/state/state.go` | `Trajectory`, `RLRun`, `VM`, `Execution` DB models |
+| `control-plane/vm/config.go` | VM asset resolution with auto-download fallback |
+| `training/rl-worker/worker.py` | Rollout worker — the async data collection loop |
+| `training/rl-trainer/trainer.py` | GRPO trainer — gradient updates, checkpoint saving |
+| `training/policy-server/serve.py` | vLLM policy server with weight hot-swap |
+| `scripts/modal_pipeline_test.py` | End-to-end pipeline test |
+| `scripts/build_daemon_rootfs.sh` | Build Alpine rootfs with daemon binary |
+| `cmd/daemon/daemon.go` | In-VM daemon — code execution, file I/O, health |
+
+---
+
+## Project structure
 
 ```
 .
-├── cmd/
-│   ├── cli/                    # CLI tool
-│   └── daemon/                 # In-VM daemon (FaaS + sandbox exec + file I/O)
 ├── control-plane/
 │   ├── api/
-│   │   ├── rl.go               # RL coordinator — run lifecycle
-│   │   ├── rl_env.go           # RL environment server (reset/step/close)
-│   │   ├── rl_buffer.go        # Experience buffer (push/sample/stats)
-│   │   └── ...                 # FaaS, sandbox, deployment handlers
-│   ├── auth/                   # API key management
-│   ├── registry/               # Function registry
-│   ├── sandbox/                # Sandbox manager
-│   ├── scheduler/              # FaaS + RL job scheduler
-│   ├── deployment/             # Long-lived deployments + proxy
-│   ├── state/                  # SQLite state (functions, executions, VMs, sandboxes, trajectories, RL runs)
-│   └── vm/                     # Firecracker VM lifecycle + warm pool + asset auto-download
+│   │   ├── rl.go               # RL coordinator
+│   │   ├── rl_env.go           # RL environment (reset/step/close)
+│   │   ├── rl_buffer.go        # Experience buffer
+│   │   └── ...                 # FaaS, sandbox, deployment, training handlers
+│   ├── modal/                  # Modal GPU provider client
+│   ├── scheduler/              # Job dispatch (Modal, Akash, HuggingFace)
+│   ├── state/                  # SQLite models
+│   └── vm/                     # Firecracker VM lifecycle
 ├── training/
-│   ├── rl-worker/
-│   │   └── worker.py           # Rollout worker loop
-│   └── rl-trainer/
-│       └── trainer.py          # GRPO trainer
-├── sdk/
-│   └── python/                 # skyscale (App/deploy), skyscale_sandbox (Sandbox client)
-├── tests/
-│   └── e2e/                    # Integration tests (build tag: integration)
-├── examples/                   # Example functions
-└── scripts/
-    ├── modal_pipeline_test.py  # End-to-end RL pipeline test on Modal
-    ├── build_daemon_rootfs.sh  # Build Alpine rootfs with daemon binary
-    └── ...                     # Other setup and build scripts
+│   ├── rl-worker/              # Rollout worker (Python)
+│   ├── rl-trainer/             # GRPO trainer (Python)
+│   └── policy-server/          # vLLM policy server (Python)
+├── dashboard/                  # Next.js dashboard (RL training, job queue, metrics)
+├── cmd/
+│   ├── daemon/                 # In-VM daemon (Go)
+│   └── cli/                    # CLI tool
+├── sdk/python/                 # Sandbox + App SDK
+├── scripts/
+│   ├── modal_pipeline_test.py  # End-to-end test
+│   └── build_daemon_rootfs.sh  # Build VM rootfs
+└── tests/e2e/                  # Integration tests
 ```
 
 ---
 
-## Configuration Reference
+## Configuration reference
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SKYSCALE_PUBLIC_BASE` | — | Origin for deployment URLs (`http(s)://host:port`, no trailing slash) |
-| `SKYSCALE_SDK_PYTHON` | — | Absolute path to `sdk/python` for `skyscale deploy` when not run from the repo |
-| `PORT` | `8080` | Control plane HTTP port |
-| `DB_PATH` | `skyscale.db` | SQLite database path |
-| `FAAS_VM_KERNEL_PATH` | — | Path to Firecracker kernel image |
-| `FAAS_VM_ROOTFS_PATH` | — | Path to VM root filesystem |
-| `FAAS_VM_MEMORY_MB` | `128` | Memory per VM in MB |
-| `FAAS_VM_CPU_COUNT` | `1` | vCPUs per VM |
-| `API_KEY_SALT` | — | Salt for API key hashing |
-| `JWT_SECRET` | — | JWT signing secret |
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | Public control-plane URL used by the dashboard browser client and websocket stream |
-| `SKYSCALE_CONTROL_PLANE_URL` | `NEXT_PUBLIC_API_URL` | Server-side control-plane URL used by the dashboard's authenticated GPU job proxy |
-| `DATABASE_URL` | — | Neon/PostgreSQL connection string for Better Auth user and session storage |
-| `BETTER_AUTH_SECRET` | — | Better Auth signing secret; generate with `openssl rand -base64 32` |
-| `BETTER_AUTH_URL` | `http://localhost:3000` | Public dashboard origin for Better Auth callbacks and cookies |
-| `FAAS_VM_KERNEL_PATH` | `/opt/skyscale/vm/vmlinux-5.10.225` | Firecracker kernel; auto-downloaded if absent |
-| `FAAS_VM_ROOTFS_PATH` | `/opt/skyscale/vm/rootfs.ext4` | VM root filesystem with daemon; auto-downloaded if absent |
-| `MODAL_TOKEN_ID` | — | Modal API token ID (for Modal GPU provider) |
-| `MODAL_TOKEN_SECRET` | — | Modal API token secret |
+| Variable | Description |
+|----------|-------------|
+| `PORT` | Control plane HTTP port (default `8080`) |
+| `MODAL_TOKEN_ID` | Modal API token ID |
+| `MODAL_TOKEN_SECRET` | Modal API token secret |
+| `HF_TOKEN` | HuggingFace token for model downloads |
+| `FAAS_VM_KERNEL_PATH` | Firecracker kernel path (auto-downloaded if absent) |
+| `FAAS_VM_ROOTFS_PATH` | VM rootfs path (auto-downloaded if absent) |
+| `FAAS_VM_MEMORY_MB` | Memory per VM in MB (default `128`) |
+| `FAAS_VM_CPU_COUNT` | vCPUs per VM (default `1`) |
+| `DB_PATH` | SQLite database path (default `skyscale.db`) |
+| `SKYSCALE_PUBLIC_BASE` | Public origin for deployment URLs |
+| `NEXT_PUBLIC_API_URL` | Control-plane URL for the dashboard |
+| `DATABASE_URL` | PostgreSQL connection string for auth |
+| `BETTER_AUTH_SECRET` | Better Auth signing secret |
+
+---
+
+## What's not built yet
+
+- **Multi-turn episodes** — workers run single-turn (one attempt per problem). Multi-turn (error → fix → retry) is the next step.
+- **Custom problem sets** — problems are currently embedded in the control plane. A problem registry API (upload JSONL) is planned.
+- **Weight broadcast** — policy server hot-swaps from the artifact store URL. Peer-assisted weight distribution (SHARDCAST-style) would reduce reload latency at scale.
+- **Permissionless workers** — currently workers are trusted. TOPLOC-style verification for untrusted third-party contributors is future work.
 
 ---
 
 ## License
 
-MIT License — see the LICENSE file for details.
+MIT — see LICENSE.
 
 ## Acknowledgements
-- [Firecracker](https://github.com/firecracker-microvm/firecracker) — secure and fast microVMs
-- [firecracker-go-sdk](https://github.com/firecracker-microvm/firecracker-go-sdk) — Go SDK for Firecracker
-- [tc-redirect-tap](https://github.com/awslabs/tc-redirect-tap) — CNI plugin for Firecracker networking
+
+- [Firecracker](https://github.com/firecracker-microvm/firecracker) — the microVM runtime powering every RL environment episode
+- [Echo-2 / INTELLECT-2](https://gradient.network/blog/echo-2-unlocking-the-second-scaling-law) — the distributed async RL architecture this system is based on
+- [DeepSeek-R1](https://arxiv.org/abs/2501.12948) — GRPO algorithm
+- [vLLM](https://github.com/vllm-project/vllm) — policy server inference engine
+- [Modal](https://modal.com) — on-demand GPU compute for policy server and trainer
