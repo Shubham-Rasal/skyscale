@@ -15,12 +15,12 @@ type Registry struct {
 	logger    *logrus.Logger
 }
 
-// NewRegistry builds a Registry from the GPU_PROVIDER_ORDER env var (default: "akash").
-// Supported names: "akash", "huggingface"/"hf", "aws", "azure".
+// NewRegistry builds a Registry from the GPU_PROVIDER_ORDER env var (default: "modal,akash").
+// Supported names: "modal", "akash", "huggingface"/"hf", "aws", "azure".
 func NewRegistry(logger *logrus.Logger) *Registry {
 	order := os.Getenv("GPU_PROVIDER_ORDER")
 	if order == "" {
-		order = "akash"
+		order = "modal,akash"
 	}
 	names := strings.Split(order, ",")
 	var list []GPUProvider
@@ -77,6 +77,8 @@ func newProviderByName(name string, logger *logrus.Logger) (GPUProvider, bool) {
 		return NewAWSProvider(), true
 	case "azure":
 		return NewAzureProvider(), true
+	case "modal":
+		return NewModalProvider(logger), true
 	default:
 		return nil, false
 	}

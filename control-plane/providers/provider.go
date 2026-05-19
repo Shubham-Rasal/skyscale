@@ -17,6 +17,7 @@ type DeploySpec struct {
 	ExecutionID     string
 	JobID           string
 	ControlPlaneURL string
+	Cmd             []string // optional override for the container command
 }
 
 // DeployResult holds the opaque identifiers returned after a successful deployment.

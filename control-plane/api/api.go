@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"time"
 	_ "net/http/pprof"
+	"time"
+
 	"github.com/bluequbit/faas/control-plane/akash"
 	"github.com/bluequbit/faas/control-plane/auth"
 	"github.com/bluequbit/faas/control-plane/providers"
 	"github.com/bluequbit/faas/control-plane/registry"
+	"github.com/bluequbit/faas/control-plane/sandbox"
 	"github.com/bluequbit/faas/control-plane/scheduler"
 	"github.com/bluequbit/faas/control-plane/state"
 	"github.com/bluequbit/faas/control-plane/vm"
@@ -30,6 +32,7 @@ type APIHandler struct {
 	bufferPool       *providers.BufferPool
 	jobDispatcher    *scheduler.JobQueueDispatcher
 	artifactStore    *ArtifactStore
+	sandboxManager   *sandbox.SandboxManager
 	logger           *logrus.Logger
 }
 
@@ -102,6 +105,11 @@ func NewAPIHandler(functionRegistry *registry.FunctionRegistry, vmManager *vm.VM
 	}
 }
 
+// SetSandboxManager injects the sandbox manager (called from main after construction).
+func (h *APIHandler) SetSandboxManager(sm *sandbox.SandboxManager) {
+	h.sandboxManager = sm
+}
+
 // StartBackgroundWorkers starts the job queue dispatcher and buffer pool.
 // Call this once after NewAPIHandler.
 func (h *APIHandler) StartBackgroundWorkers(ctx context.Context) {
@@ -169,6 +177,27 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 
 	// Result routes - no auth required for VM to report results
 	api.HandleFunc("/results", h.handleResultHandler).Methods("POST")
+
+	// RL environment routes (called by rollout workers — no auth)
+	rlEnv := api.PathPrefix("/rl/env").Subrouter()
+	rlEnv.HandleFunc("/reset", h.rlEnvResetHandler).Methods("POST")
+	rlEnv.HandleFunc("/step", h.rlEnvStepHandler).Methods("POST")
+	rlEnv.HandleFunc("/close", h.rlEnvCloseHandler).Methods("POST")
+	rlEnv.HandleFunc("/problems", h.rlEnvProblemsHandler).Methods("GET")
+	rlEnv.HandleFunc("/problems/{id}", h.rlEnvProblemHandler).Methods("GET")
+
+	// RL experience buffer routes (called by rollout workers and trainer — no auth)
+	rlBuf := api.PathPrefix("/rl/buffer").Subrouter()
+	rlBuf.HandleFunc("/push", h.rlBufferPushHandler).Methods("POST")
+	rlBuf.HandleFunc("/sample", h.rlBufferSampleHandler).Methods("POST")
+	rlBuf.HandleFunc("/stats", h.rlBufferStatsHandler).Methods("GET")
+
+	// RL run coordinator routes (dashboard)
+	rlRuns := api.PathPrefix("/rl/runs").Subrouter()
+	rlRuns.HandleFunc("", h.rlListRunsHandler).Methods("GET")
+	rlRuns.HandleFunc("", h.rlStartRunHandler).Methods("POST")
+	rlRuns.HandleFunc("/{id}", h.rlGetRunHandler).Methods("GET")
+	rlRuns.HandleFunc("/{id}", h.rlStopRunHandler).Methods("DELETE")
 }
 
 // RegisterSandboxAPIRoutes wires the sandbox API handler into the provided router
@@ -532,6 +561,7 @@ func (h *APIHandler) handleResultHandler(w http.ResponseWriter, r *http.Request)
 	} else {
 		execution.Status = "error"
 		execution.Error = result.ErrorMessage
+		execution.Logs = result.Output
 	}
 
 	// Save execution

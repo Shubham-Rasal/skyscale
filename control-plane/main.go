@@ -109,6 +109,7 @@ func main() {
 	sandboxManager := sandbox.NewSandboxManager(vmManager, stateManager, logger)
 	sandboxAPIHandler := api.NewSandboxAPIHandler(sandboxManager, logger)
 	api.RegisterSandboxAPIRoutes(router, sandboxAPIHandler)
+	apiHandler.SetSandboxManager(sandboxManager)
 
 	// Add metrics endpoint
 	router.Handle("/metrics", promhttp.Handler())

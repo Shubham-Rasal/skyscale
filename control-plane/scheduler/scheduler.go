@@ -360,7 +360,7 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 				if err != nil {
 					continue
 				}
-				if fresh.Status == "completed" || fresh.Status == "failed" {
+				if isTerminalExecutionStatus(fresh.Status) {
 					s.logger.Infof("GPU training job %s reached terminal status: %s", execution.ID, fresh.Status)
 					s.releaseVM(vmInstance.ID, request.HardwareType)
 					resultChan <- &ExecutionResult{
@@ -487,8 +487,12 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 		if request.Sync {
 			// The daemon will send the result to the control plane via a callback
 			// We need to poll for the result
-			maxRetries := 30 // Maximum number of retries
 			retryInterval := 500 * time.Millisecond
+			syncWait := time.Duration(function.Timeout+10) * time.Second
+			if syncWait < 30*time.Second {
+				syncWait = 30 * time.Second
+			}
+			maxRetries := int(syncWait / retryInterval)
 
 			for i := 0; i < maxRetries; i++ {
 				// Wait before checking
@@ -500,7 +504,7 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 					continue
 				}
 
-				if execResult.Status == "completed" || execResult.Status == "failed" {
+				if isTerminalExecutionStatus(execResult.Status) {
 					// Execution is complete, parse the result
 					var output map[string]interface{}
 					if execResult.Logs != "" {
@@ -523,7 +527,7 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 						Duration:     execResult.Duration,
 					}
 
-					if execResult.Status == "failed" {
+					if execResult.Status == "failed" || execResult.Status == "error" {
 						result.StatusCode = 500
 					}
 
@@ -600,6 +604,10 @@ func (s *Scheduler) releaseVM(vmID, hwType string) {
 			s.logger.Errorf("Failed to return VM %s to pool: %v", vmID, err)
 		}
 	}
+}
+
+func isTerminalExecutionStatus(status string) bool {
+	return status == "completed" || status == "failed" || status == "error" || status == "timeout"
 }
 
 // asyncWorker processes asynchronous execution requests
