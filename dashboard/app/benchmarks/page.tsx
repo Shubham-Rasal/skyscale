@@ -1,9 +1,17 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { Sidebar } from '@/components/Sidebar'
+import { Gauge, Timer, Zap } from 'lucide-react'
+import { DashboardShell } from '@/components/dashboard/dashboard-shell'
+import { PageHeader } from '@/components/dashboard/page-header'
+import { StatBadge } from '@/components/dashboard/stat-badge'
+import { ContentPanel } from '@/components/dashboard/content-panel'
 import { useRealtimeStream } from '@/hooks/useRealtimeStream'
 import { api } from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 
 type ColumnProfile = {
   name: string
@@ -11,12 +19,7 @@ type ColumnProfile = {
   null_count: number
   null_pct: number
   unique_count: number
-  stats?: {
-    min: number
-    max: number
-    mean: number
-    p50: number
-  }
+  stats?: { min: number; max: number; mean: number; p50: number }
 }
 
 type ProfileReport = {
@@ -114,32 +117,44 @@ def handle(event, context):
     return {"ok": True, "row_count": len(rows), "column_count": len(columns), "quality_score": score, "columns": report, "issues": issues}
 `
 
-const VERIFIED_REPORT: ProfileReport = {
-  ok: true,
-  row_count: 8,
-  column_count: 6,
-  quality_score: 87.5,
-  columns: [
-    { name: 'customer_id', type: 'number', null_count: 0, null_pct: 0, unique_count: 8, stats: { min: 1001, max: 1008, mean: 1004.5, p50: 1005 } },
-    { name: 'plan', type: 'string', null_count: 0, null_pct: 0, unique_count: 3 },
-    { name: 'monthly_spend', type: 'number', null_count: 1, null_pct: 12.5, unique_count: 6, stats: { min: 9, max: 1200, mean: 346.357, p50: 129.5 } },
-    { name: 'events_last_30d', type: 'number', null_count: 1, null_pct: 12.5, unique_count: 7, stats: { min: 4, max: 530, mean: 167.143, p50: 73 } },
-    { name: 'churn_risk', type: 'number', null_count: 1, null_pct: 12.5, unique_count: 7, stats: { min: 0.03, max: 0.81, mean: 0.321, p50: 0.2 } },
-    { name: 'region', type: 'string', null_count: 3, null_pct: 37.5, unique_count: 3 },
-  ],
-  issues: [
-    { severity: 'medium', column: 'monthly_spend', message: '1 missing values' },
-    { severity: 'medium', column: 'events_last_30d', message: '1 missing values' },
-    { severity: 'medium', column: 'churn_risk', message: '1 missing values' },
-    { severity: 'high', column: 'region', message: '37.5% missing' },
-  ],
+const VERIFIED_LOAD_TEST = {
+  p95Ms: 1680,
+  avgMs: 821,
+  throughputRps: 0.5,
+  successRate: '100/100',
+  scenario: '100 concurrent users, 100 invocations',
+  pool: '2 warm Firecracker VMs',
 }
 
-const BENCHMARK_STATS = [
-  { label: 'CSV profiles', value: '100/100', tone: 'var(--success)', sub: 'successful Firecracker invocations' },
-  { label: 'Function p95', value: '1.68s', tone: 'var(--running)', sub: 'inside the VM, including Python work' },
-  { label: 'Quality score', value: '87.5', tone: 'var(--warning)', sub: 'computed from null coverage' },
-  { label: 'HTTP failures', value: '0', tone: 'var(--success)', sub: 'k6 threshold passed' },
+const SPEED_STATS = [
+  {
+    label: 'p95 latency',
+    value: '1.68s',
+    tone: 'running' as const,
+    sub: '95% of runs finish inside the VM within this time',
+    icon: Gauge,
+  },
+  {
+    label: 'Average latency',
+    value: '821ms',
+    tone: 'primary' as const,
+    sub: 'Typical execution time once a warm VM is ready',
+    icon: Timer,
+  },
+  {
+    label: 'Throughput',
+    value: '0.50 req/s',
+    tone: 'warning' as const,
+    sub: 'Sustained rate under 100 concurrent users (k6)',
+    icon: Zap,
+  },
+  {
+    label: 'Success rate',
+    value: '100/100',
+    tone: 'success' as const,
+    sub: 'All invocations completed without error',
+    icon: Gauge,
+  },
 ]
 
 export default function BenchmarksPage() {
@@ -147,57 +162,64 @@ export default function BenchmarksPage() {
   const [running, setRunning] = useState(false)
   const [liveRun, setLiveRun] = useState<LiveRun | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
+  const [showWorkloadOutput, setShowWorkloadOutput] = useState(false)
 
   const runResult = liveRun?.response ?? null
-  const report = runResult?.output ?? VERIFIED_REPORT
+  const report = runResult?.output
+
   const headlineStats = useMemo(() => {
-    if (!liveRun) return BENCHMARK_STATS
+    if (!liveRun) return SPEED_STATS
 
     const ok = liveRun.httpStatus === 'ok' && liveRun.response.status_code === 200
-    const duration = liveRun.response.duration_ms
-    const output = liveRun.response.output
+    const vmMs = liveRun.response.duration_ms
+    const wallMs = liveRun.wallMs
 
     return [
       {
-        label: 'Live profile',
-        value: ok ? '1/1' : '0/1',
-        tone: ok ? 'var(--success)' : 'var(--error)',
-        sub: `${liveRun.wallMs}ms end-to-end from browser`,
+        label: 'Your last run',
+        value: ok ? 'Success' : 'Failed',
+        tone: ok ? 'success' as const : 'primary' as const,
+        sub: `Completed at ${liveRun.completedAt}`,
+        icon: Gauge,
       },
       {
-        label: 'VM function time',
-        value: duration ? `${duration}ms` : '-',
-        tone: 'var(--running)',
-        sub: 'reported by the Firecracker daemon',
+        label: 'End-to-end time',
+        value: wallMs ? formatMs(wallMs) : '—',
+        tone: 'running' as const,
+        sub: 'Browser click → response (includes register + invoke)',
+        icon: Timer,
       },
       {
-        label: 'Quality score',
-        value: output ? String(output.quality_score) : '-',
-        tone: 'var(--warning)',
-        sub: output ? `${output.row_count} rows, ${output.column_count} columns profiled` : 'no report returned',
+        label: 'VM execution',
+        value: vmMs ? formatMs(vmMs) : '—',
+        tone: 'primary' as const,
+        sub: 'Time spent running Python inside Firecracker',
+        icon: Zap,
       },
       {
-        label: 'Issues found',
-        value: output ? String(output.issues.length) : '0',
-        tone: output?.issues.some(issue => issue.severity === 'high') ? 'var(--warning)' : 'var(--success)',
-        sub: output ? 'missing-value checks from latest run' : 'no data quality issues returned',
+        label: 'vs verified p95',
+        value: vmMs ? compareToP95(vmMs) : '—',
+        tone: vmMs && vmMs <= VERIFIED_LOAD_TEST.p95Ms ? 'success' as const : 'warning' as const,
+        sub: `Verified p95 is ${formatMs(VERIFIED_LOAD_TEST.p95Ms)} under load`,
+        icon: Gauge,
       },
     ]
   }, [liveRun])
+
   const readyWarm = useMemo(
     () => data.vm_pool.filter(vm => (vm.HardwareType === 'cpu' || !vm.HardwareType) && vm.IsWarm && vm.Status === 'ready' && vm.ID !== 'host-vm-test').length,
-    [data.vm_pool]
+    [data.vm_pool],
   )
   const busyCPU = useMemo(
     () => data.vm_pool.filter(vm => (vm.HardwareType === 'cpu' || !vm.HardwareType) && vm.Status === 'busy').length,
-    [data.vm_pool]
+    [data.vm_pool],
   )
 
-  async function runProfiler() {
+  async function runSpeedTest() {
     setRunning(true)
     setRunError(null)
     try {
-      const name = `csv-profiler-ui-${Date.now()}`
+      const name = `speed-test-${Date.now()}`
       await api.registerFunction({
         name,
         runtime: 'python3',
@@ -222,20 +244,17 @@ export default function BenchmarksPage() {
         response: result,
       })
       if (result.status_code !== 200) {
-        setRunError(result.error_message ?? 'Profiler returned a non-200 status')
+        setRunError(result.error_message ?? 'Speed test returned a non-200 status')
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to run profiler'
+      const message = err instanceof Error ? err.message : 'Failed to run speed test'
       setRunError(message)
       setLiveRun({
-        functionName: 'csv-profiler-ui',
+        functionName: 'speed-test',
         httpStatus: 'error',
         wallMs: 0,
         completedAt: new Date().toLocaleTimeString(),
-        response: {
-          status_code: 500,
-          error_message: message,
-        },
+        response: { status_code: 500, error_message: message },
       })
     } finally {
       setRunning(false)
@@ -243,244 +262,311 @@ export default function BenchmarksPage() {
   }
 
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)' }}>
-      <Sidebar connected={connected} />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        <TopBar readyWarm={readyWarm} busyCPU={busyCPU} />
+    <DashboardShell connected={connected}>
+      <PageHeader
+        title="Load Speed"
+        description="How fast Firecracker VMs start, run code, and respond under load."
+        badge="Verified"
+        badgeVariant="outline"
+        stats={
+          <>
+            <StatBadge label="Warm VMs" value={readyWarm} tone="success" />
+            <StatBadge label="Busy" value={busyCPU} tone="running" />
+          </>
+        }
+      />
 
-        <main style={{ flex: 1, overflowY: 'auto', padding: '28px 24px 40px' }}>
-          <section style={{
-            border: '1px solid var(--border)',
-            borderRadius: 16,
-            background: 'linear-gradient(135deg, rgba(124,92,252,0.16), rgba(13,13,13,0.94) 36%, var(--surface))',
-            padding: 28,
-            marginBottom: 16,
-            position: 'relative',
-            overflow: 'hidden',
-          }}>
-            <div style={{ position: 'relative', zIndex: 1, maxWidth: 760 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 14 }}>
-                Firecracker benchmark
-              </div>
-              <h1 style={{ fontFamily: 'var(--font-grotesk), sans-serif', fontSize: 38, lineHeight: 1.04, letterSpacing: '-0.055em', color: 'var(--text-primary)', marginBottom: 14 }}>
-                Data quality profiling in isolated microVMs
-              </h1>
-              <p style={{ fontSize: 14, lineHeight: 1.8, color: 'var(--text-secondary)', maxWidth: 680 }}>
-                This benchmark runs a useful serverless workload: parse CSV data, infer schema, count missing values, compute numeric stats, and return a quality report. The verified k6 run used 100 concurrent sync invocations against a two-VM warm pool.
-              </p>
+      <main className="flex-1 overflow-y-auto p-6">
+        <Card className="mb-6 overflow-hidden border-primary/20 bg-gradient-to-br from-primary/10 via-card to-card">
+          <CardContent className="p-7">
+            <Badge variant="outline" className="mb-3 border-primary/30 bg-primary/10 text-primary">
+              What this measures
+            </Badge>
+            <h2 className="mb-2 max-w-2xl text-2xl font-semibold tracking-tight">
+              Time from request to finished execution
+            </h2>
+            <p className="mb-5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+              We stress-test the platform with 100 concurrent users hitting a warm VM pool.
+              Each request runs the same Python workload so results are comparable run to run.
+              Lower latency and higher throughput mean faster load handling.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary">{VERIFIED_LOAD_TEST.scenario}</Badge>
+              <Badge variant="secondary">{VERIFIED_LOAD_TEST.pool}</Badge>
+              <Badge variant="secondary">Fixed CSV workload (~8 rows)</Badge>
             </div>
-          </section>
+          </CardContent>
+        </Card>
 
-          <section style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}>
+        <section className="mb-6">
+          <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {liveRun ? 'Your latest run' : 'Verified load test results'}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {headlineStats.map(stat => (
-              <MetricCard key={stat.label} {...stat} />
+              <SpeedMetricCard key={stat.label} {...stat} />
             ))}
-          </section>
+          </div>
+        </section>
 
-          <section style={{ display: 'grid', gridTemplateColumns: 'minmax(420px, 1.15fr) minmax(360px, 0.85fr)', gap: 16, alignItems: 'start' }}>
-            <Panel label="Data Quality Report">
-              <ReportSummary report={report} duration={runResult?.duration_ms} />
-              <ColumnTable columns={report.columns} />
-            </Panel>
+        <section className="mb-6 grid items-start gap-4 xl:grid-cols-[1fr_1fr]">
+          <ContentPanel title="Latency breakdown">
+            <LatencyBreakdown liveRun={liveRun} />
+          </ContentPanel>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <Panel label="Run It Live">
-                <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7, marginBottom: 14 }}>
-                  Registers a fresh Python FaaS function and invokes it on the sample CSV payload. The payload is base64 encoded so multiline data is safe to pass through the current daemon executor.
-                </p>
-                <button
-                  onClick={runProfiler}
-                  disabled={running}
-                  style={{
-                    width: '100%',
-                    height: 38,
-                    border: '1px solid var(--accent-border)',
-                    borderRadius: 8,
-                    background: running ? 'var(--bg-active)' : 'var(--accent)',
-                    color: running ? 'var(--text-secondary)' : 'white',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: running ? 'not-allowed' : 'pointer',
-                    fontFamily: 'inherit',
-                  }}
-                >
-                  {running ? 'Running profiler...' : 'Run CSV profiler'}
-                </button>
-                {runError && (
-                  <div style={{ marginTop: 12, padding: 10, borderRadius: 8, background: 'var(--error-dim)', border: '1px solid rgba(239,68,68,0.24)', color: 'var(--error)', fontSize: 12, lineHeight: 1.5 }}>
-                    {runError}
-                  </div>
-                )}
-              </Panel>
-
-              <Panel label="Latest Live Run">
-                <LiveRunRows run={liveRun} running={running} />
-              </Panel>
-
-              <Panel label="Verified k6 Result">
-                <BenchmarkRows />
-              </Panel>
-
-              <Panel label="Sample CSV">
-                <pre style={{ whiteSpace: 'pre-wrap', color: 'var(--text-secondary)', fontSize: 11, lineHeight: 1.65, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
-                  {SAMPLE_CSV.trim()}
-                </pre>
-              </Panel>
+          <ContentPanel title="Run your own test">
+            <p className="mb-4 text-sm leading-relaxed text-muted-foreground">
+              Registers a fresh function and invokes it once from your browser.
+              This includes setup overhead, so it is usually slower than the verified pool benchmark above.
+            </p>
+            <Button className="w-full" onClick={runSpeedTest} disabled={running}>
+              {running ? 'Running speed test…' : 'Run speed test'}
+            </Button>
+            {runError && (
+              <p className="mt-3 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {runError}
+              </p>
+            )}
+            <div className="mt-4">
+              <LiveRunSummary run={liveRun} running={running} />
             </div>
-          </section>
-        </main>
+          </ContentPanel>
+        </section>
+
+        <section className="grid items-start gap-4 xl:grid-cols-2">
+          <ContentPanel title="Verified k6 load test">
+            <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
+              Automated load test against a pre-warmed two-VM pool. These numbers are the baseline for platform speed.
+            </p>
+            <LoadTestTable />
+          </ContentPanel>
+
+          <ContentPanel title="Test workload">
+            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+              Every invocation parses a small CSV and returns JSON. The workload is fixed so timing differences reflect platform speed, not varying input size.
+            </p>
+            <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3 text-xs">
+              <Row label="Runtime" value="Python 3 on Firecracker" />
+              <Row label="Memory" value="128 MB" />
+              <Row label="Payload" value="8-row customer CSV" />
+              <Row label="Work done" value="Parse, infer types, compute stats" />
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-3 h-7 px-0 text-muted-foreground hover:bg-transparent"
+              onClick={() => setShowWorkloadOutput(v => !v)}
+            >
+              {showWorkloadOutput ? 'Hide sample output ↑' : 'Show sample output ↓'}
+            </Button>
+            {showWorkloadOutput && report && (
+              <div className="mt-3 space-y-3 border-t border-border pt-3">
+                <ReportSummary report={report} duration={runResult?.duration_ms} />
+                <ColumnTable columns={report.columns} />
+              </div>
+            )}
+            {showWorkloadOutput && !report && (
+              <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                Run a speed test to see the workload output from your invocation.
+              </p>
+            )}
+          </ContentPanel>
+        </section>
+      </main>
+    </DashboardShell>
+  )
+}
+
+function formatMs(ms: number) {
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}
+
+function compareToP95(vmMs: number) {
+  const diff = vmMs - VERIFIED_LOAD_TEST.p95Ms
+  if (diff <= 0) return `${Math.abs(Math.round(diff / VERIFIED_LOAD_TEST.p95Ms * 100))}% faster`
+  return `${Math.round(diff / VERIFIED_LOAD_TEST.p95Ms * 100)}% slower`
+}
+
+function SpeedMetricCard({
+  label,
+  value,
+  tone,
+  sub,
+  icon: Icon,
+}: {
+  label: string
+  value: string
+  tone: 'primary' | 'success' | 'warning' | 'running'
+  sub: string
+  icon: typeof Gauge
+}) {
+  const toneClass = {
+    primary: 'text-primary',
+    success: 'text-[var(--success)]',
+    warning: 'text-[var(--warning)]',
+    running: 'text-[var(--running)]',
+  }[tone]
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-2 flex items-center gap-2">
+          <Icon className={cn('size-4', toneClass)} />
+          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
+        </div>
+        <div className={cn('text-3xl font-bold tracking-tight', toneClass)}>{value}</div>
+        <div className="mt-2 text-xs leading-relaxed text-muted-foreground">{sub}</div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function LatencyBreakdown({ liveRun }: { liveRun: LiveRun | null }) {
+  const vmMs = liveRun?.response.duration_ms ?? VERIFIED_LOAD_TEST.avgMs
+  const p95Ms = VERIFIED_LOAD_TEST.p95Ms
+  const maxMs = Math.max(p95Ms, vmMs) * 1.15
+
+  const bars = liveRun
+    ? [
+        { label: 'VM execution', ms: vmMs, tone: 'bg-[var(--running)]', hint: 'Python running inside Firecracker' },
+        { label: 'End-to-end', ms: liveRun.wallMs, tone: 'bg-primary', hint: 'Includes function registration + network' },
+        { label: 'Verified p95', ms: p95Ms, tone: 'bg-muted-foreground/50', hint: 'Baseline under 100 concurrent users' },
+      ]
+    : [
+        { label: 'Average (warm)', ms: VERIFIED_LOAD_TEST.avgMs, tone: 'bg-[var(--running)]', hint: 'Typical VM execution time' },
+        { label: 'p95 (warm)', ms: p95Ms, tone: 'bg-primary', hint: '95th percentile under load' },
+        { label: 'HTTP p95', ms: 186000, tone: 'bg-muted-foreground/50', hint: 'Full round-trip including queueing at peak load' },
+      ]
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        {liveRun
+          ? 'Compare your single browser run against the verified load-test baseline.'
+          : 'Verified numbers from a warm pool under concurrent load. HTTP times include queueing when all VMs are busy.'}
+      </p>
+      <div className="space-y-3">
+        {bars.map(bar => (
+          <div key={bar.label}>
+            <div className="mb-1 flex items-baseline justify-between gap-2 text-xs">
+              <span className="font-medium">{bar.label}</span>
+              <span className="font-mono tabular-nums text-muted-foreground">{formatMs(bar.ms)}</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-muted">
+              <div
+                className={cn('h-full rounded-full transition-all', bar.tone)}
+                style={{ width: `${Math.min(100, (bar.ms / maxMs) * 100)}%` }}
+              />
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">{bar.hint}</p>
+          </div>
+        ))}
       </div>
     </div>
   )
 }
 
-function TopBar({ readyWarm, busyCPU }: { readyWarm: number; busyCPU: number }) {
+function LoadTestTable() {
+  const rows = [
+    ['Test setup', VERIFIED_LOAD_TEST.scenario],
+    ['VM pool', VERIFIED_LOAD_TEST.pool],
+    ['Invocations succeeded', VERIFIED_LOAD_TEST.successRate],
+    ['Avg VM execution', formatMs(VERIFIED_LOAD_TEST.avgMs)],
+    ['p95 VM execution', formatMs(VERIFIED_LOAD_TEST.p95Ms)],
+    ['Throughput', `${VERIFIED_LOAD_TEST.throughputRps} req/s`],
+    ['Avg HTTP round-trip', '1m 33s (includes queue wait)'],
+    ['p95 HTTP round-trip', '3m 06s (includes queue wait)'],
+  ]
+
   return (
-    <div style={{ height: 56, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', padding: '0 24px', gap: 10, flexShrink: 0 }}>
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
-        <h1 style={{ fontFamily: 'var(--font-grotesk), sans-serif', fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-          Benchmarks
-        </h1>
-        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'var(--success-dim)', color: 'var(--success)', letterSpacing: '0.06em', border: '1px solid rgba(34,197,94,0.25)' }}>
-          VERIFIED
-        </span>
-      </div>
-      <StatPill label="Warm VMs" value={readyWarm} color="var(--success)" dimColor="var(--success-dim)" />
-      <StatPill label="Busy CPU" value={busyCPU} color="var(--running)" dimColor="var(--running-dim)" />
+    <div className="space-y-2">
+      {rows.map(([label, value]) => (
+        <Row key={label} label={label} value={value} />
+      ))}
     </div>
   )
 }
 
-function Panel({ label, children }: { label: string; children: React.ReactNode }) {
+function LiveRunSummary({ run, running }: { run: LiveRun | null; running: boolean }) {
+  if (running) {
+    return (
+      <p className="rounded-lg border border-border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+        Registering function and measuring execution time…
+      </p>
+    )
+  }
+
+  if (!run) {
+    return (
+      <p className="rounded-lg border border-border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+        No live run yet. Hit &ldquo;Run speed test&rdquo; to measure latency from your browser.
+      </p>
+    )
+  }
+
+  const ok = run.httpStatus === 'ok' && run.response.status_code === 200
+
   return (
-    <div style={{ background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', overflow: 'hidden' }}>
-      <div style={{ padding: '13px 16px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-        {label}
+    <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium">Result</span>
+        <Badge variant={ok ? 'default' : 'destructive'} className="text-[10px]">
+          {ok ? 'Success' : 'Failed'}
+        </Badge>
       </div>
-      <div style={{ padding: 16 }}>{children}</div>
+      <Row label="End-to-end" value={run.wallMs ? formatMs(run.wallMs) : '—'} />
+      <Row label="VM execution" value={run.response.duration_ms ? formatMs(run.response.duration_ms) : '—'} />
+      <Row label="Completed" value={run.completedAt} />
     </div>
   )
 }
 
-function MetricCard({ label, value, tone, sub }: { label: string; value: string; tone: string; sub: string }) {
+function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ padding: 16, borderRadius: 12, background: 'var(--surface)', border: '1px solid var(--border)' }}>
-      <div style={{ fontSize: 24, fontWeight: 700, color: tone, letterSpacing: '-0.04em', marginBottom: 4 }}>{value}</div>
-      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.45 }}>{sub}</div>
+    <div className="flex justify-between gap-3 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right font-medium">{value}</span>
     </div>
   )
 }
 
 function ReportSummary({ report, duration }: { report: ProfileReport; duration?: number }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       <TinyStat label="Rows" value={String(report.row_count)} />
       <TinyStat label="Columns" value={String(report.column_count)} />
-      <TinyStat label="Score" value={String(report.quality_score)} />
-      <TinyStat label="VM time" value={duration ? `${duration}ms` : '821ms avg'} />
+      <TinyStat label="VM time" value={duration ? formatMs(duration) : '—'} />
+      <TinyStat label="Issues" value={String(report.issues.length)} />
     </div>
   )
 }
 
 function TinyStat({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ padding: 12, background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 10 }}>
-      <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>{value}</div>
-      <div style={{ fontSize: 10, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 3 }}>{label}</div>
+    <div className="rounded-lg border border-border bg-muted/30 p-3">
+      <div className="text-lg font-bold tracking-tight">{value}</div>
+      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
     </div>
   )
 }
 
 function ColumnTable({ columns }: { columns: ColumnProfile[] }) {
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 0.8fr 0.7fr 1.2fr', padding: '9px 12px', background: 'var(--bg-panel)', borderBottom: '1px solid var(--border)', fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+    <div className="overflow-hidden rounded-lg border border-border">
+      <div className="grid grid-cols-[1.25fr_0.8fr_0.7fr_1.2fr] border-b border-border bg-muted/30 px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground">
         <span>Column</span><span>Type</span><span>Nulls</span><span>Stats</span>
       </div>
       {columns.map(column => (
-        <div key={column.name} style={{ display: 'grid', gridTemplateColumns: '1.25fr 0.8fr 0.7fr 1.2fr', padding: '10px 12px', borderBottom: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
-          <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{column.name}</span>
-          <span style={{ color: column.type === 'number' ? 'var(--running)' : 'var(--text-secondary)' }}>{column.type}</span>
-          <span style={{ color: column.null_count ? 'var(--warning)' : 'var(--success)' }}>{column.null_pct}%</span>
-          <span style={{ color: 'var(--text-secondary)' }}>
+        <div key={column.name} className="grid grid-cols-[1.25fr_0.8fr_0.7fr_1.2fr] items-center border-b border-border px-3 py-2.5 text-xs last:border-b-0">
+          <span className="font-medium">{column.name}</span>
+          <span className={column.type === 'number' ? 'text-[var(--running)]' : 'text-muted-foreground'}>{column.type}</span>
+          <span className={column.null_count ? 'text-[var(--warning)]' : 'text-[var(--success)]'}>{column.null_pct}%</span>
+          <span className="text-muted-foreground">
             {column.stats ? `mean ${column.stats.mean}` : `${column.unique_count} unique`}
           </span>
         </div>
       ))}
-    </div>
-  )
-}
-
-function BenchmarkRows() {
-  const rows = [
-    ['Scenario', '100 VUs, 100 shared iterations'],
-    ['Success rate', '100/100 profiles'],
-    ['Function duration', 'avg 821ms, p95 1.68s'],
-    ['HTTP duration', 'avg 1m33s, p95 3m06s'],
-    ['Throughput', '0.50 req/s'],
-  ]
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {rows.map(([label, value]) => (
-        <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12 }}>
-          <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
-          <span style={{ color: 'var(--text-primary)', fontWeight: 600, textAlign: 'right' }}>{value}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function LiveRunRows({ run, running }: { run: LiveRun | null; running: boolean }) {
-  if (running) {
-    return (
-      <div style={{ padding: 12, borderRadius: 10, background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6 }}>
-        Registering a fresh function and profiling the sample CSV on Firecracker...
-      </div>
-    )
-  }
-
-  if (!run) {
-    return (
-      <div style={{ padding: 12, borderRadius: 10, background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6 }}>
-        No live run yet. Click “Run CSV profiler” to replace the headline cards and report with fresh control-plane results.
-      </div>
-    )
-  }
-
-  const output = run.response.output
-  const rows = [
-    ['Completed', run.completedAt],
-    ['Function', run.functionName],
-    ['HTTP status', run.httpStatus === 'ok' ? '200 OK' : 'failed'],
-    ['Function status', String(run.response.status_code)],
-    ['End-to-end', run.wallMs ? `${run.wallMs}ms` : '-'],
-    ['VM duration', run.response.duration_ms ? `${run.response.duration_ms}ms` : '-'],
-    ['Rows / columns', output ? `${output.row_count} / ${output.column_count}` : '-'],
-    ['Issues', output ? `${output.issues.length}` : '-'],
-    ['Request ID', run.response.request_id ?? '-'],
-  ]
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {rows.map(([label, value]) => (
-        <div key={label} style={{ display: 'grid', gridTemplateColumns: '100px minmax(0, 1fr)', gap: 12, fontSize: 12 }}>
-          <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
-          <span style={{ color: 'var(--text-primary)', fontWeight: 600, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={value}>
-            {value}
-          </span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function StatPill({ label, value, color, dimColor }: { label: string; value: number; color: string; dimColor: string }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, background: dimColor, border: '1px solid var(--border)', fontSize: 12 }}>
-      <span style={{ fontWeight: 700, color }}>{value}</span>
-      <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
     </div>
   )
 }

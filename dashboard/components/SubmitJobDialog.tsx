@@ -2,6 +2,18 @@
 
 import { useState } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { api } from '@/lib/api'
 
 const TEMPLATES = [
@@ -78,27 +90,6 @@ interface Props {
   onSubmitted?: () => void
   trigger?: React.ReactNode
   initialTemplate?: string // label of a TEMPLATES entry to pre-select
-}
-
-const field: React.CSSProperties = {
-  width: '100%',
-  height: 34,
-  background: '#141414',
-  border: '1px solid #2a2a2a',
-  borderRadius: 6,
-  padding: '0 10px',
-  color: '#e8e8e8',
-  fontSize: 13,
-  fontFamily: 'inherit',
-  outline: 'none',
-}
-
-const label: React.CSSProperties = {
-  fontSize: 11,
-  color: '#6b6b6b',
-  display: 'block',
-  marginBottom: 5,
-  fontWeight: 500,
 }
 
 const GPU_MODELS: Record<string, { value: string; label: string }[]> = {
@@ -212,147 +203,109 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {trigger}
-      <DialogContent className="submit-dialog">
+      <DialogContent className="max-w-md gap-4">
         <DialogHeader>
-          <DialogTitle className="submit-dialog-title">New Training Run</DialogTitle>
+          <DialogTitle>New Training Run</DialogTitle>
         </DialogHeader>
 
-        {/* Template tabs */}
-        <div style={{ display: 'flex', gap: 4, marginBottom: 2 }}>
-          {TEMPLATES.map((t, i) => (
-            <button
-              key={i}
-              onClick={() => applyTemplate(i)}
-              style={{
-                padding: '4px 11px',
-                borderRadius: 5,
-                border: tplIdx === i ? '1px solid rgba(124,92,252,0.5)' : '1px solid #222',
-                background: tplIdx === i ? 'rgba(124,92,252,0.1)' : 'transparent',
-                color: tplIdx === i ? '#a78bfa' : '#6b6b6b',
-                fontSize: 12,
-                fontWeight: tplIdx === i ? 500 : 400,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-                transition: 'all 0.1s',
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <Tabs value={String(tplIdx)} onValueChange={v => applyTemplate(Number(v))}>
+          <TabsList className="grid h-auto w-full grid-cols-3 gap-1 bg-muted/50 p-1">
+            {TEMPLATES.map((t, i) => (
+              <TabsTrigger key={t.label} value={String(i)} className="text-xs">
+                {t.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div>
-            <span style={label}>Function Name *</span>
-            <input
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="functionName">Function Name *</Label>
+            <Input
+              id="functionName"
               value={fields.functionName}
               onChange={e => set('functionName', e.target.value)}
-              style={field}
               placeholder="my-trainer"
             />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <div>
-              <span style={label}>Job Type</span>
-              <select
-                value={fields.jobType}
-                onChange={e => set('jobType', e.target.value)}
-                style={{ ...field, cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b6b6b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', paddingRight: 28 }}
-              >
-                <option value="faas_function">FaaS Function</option>
-                <option value="training_run">Training Run</option>
-                <option value="rl_env">RL Environment</option>
-              </select>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Job Type</Label>
+              <Select value={fields.jobType} onValueChange={v => set('jobType', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="faas_function">FaaS Function</SelectItem>
+                  <SelectItem value="training_run">Training Run</SelectItem>
+                  <SelectItem value="rl_env">RL Environment</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            <div>
-              <span style={label}>Hardware</span>
-              <select
-                value={fields.hardwareType}
-                onChange={e => set('hardwareType', e.target.value)}
-                style={{ ...field, cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b6b6b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', paddingRight: 28 }}
-              >
-                <option value="cpu">CPU (Firecracker)</option>
-                <option value="gpu">GPU</option>
-              </select>
+            <div className="space-y-1.5">
+              <Label>Hardware</Label>
+              <Select value={fields.hardwareType} onValueChange={v => set('hardwareType', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cpu">CPU (Firecracker)</SelectItem>
+                  <SelectItem value="gpu">GPU</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
           {fields.hardwareType === 'gpu' && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <div>
-                <span style={label}>Provider</span>
-                <select
-                  value={fields.provider}
-                  onChange={e => setProvider(e.target.value)}
-                  style={{ ...field, cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b6b6b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', paddingRight: 28 }}
-                >
-                  <option value="akash">Akash</option>
-                  <option value="huggingface">Hugging Face</option>
-                </select>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Provider</Label>
+                <Select value={fields.provider} onValueChange={setProvider}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="akash">Akash</SelectItem>
+                    <SelectItem value="huggingface">Hugging Face</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-              <div>
-                <span style={label}>GPU Model</span>
-                <select
-                  value={fields.gpuModel}
-                  onChange={e => set('gpuModel', e.target.value)}
-                  style={{ ...field, cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b6b6b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center', paddingRight: 28 }}
-                >
-                  {(GPU_MODELS[fields.provider] ?? GPU_MODELS.akash).map(model => (
-                    <option key={model.value} value={model.value}>{model.label}</option>
-                  ))}
-                </select>
+              <div className="space-y-1.5">
+                <Label>GPU Model</Label>
+                <Select value={fields.gpuModel} onValueChange={v => set('gpuModel', v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {(GPU_MODELS[fields.provider] ?? GPU_MODELS.akash).map(model => (
+                      <SelectItem key={model.value} value={model.value}>{model.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-              <div style={{ gridColumn: '1 / -1' }}>
-                <span style={label}>Docker Image</span>
-                <input value={fields.dockerImage} onChange={e => set('dockerImage', e.target.value)} style={field} placeholder="ghcr.io/…" />
+              <div className="col-span-2 space-y-1.5">
+                <Label htmlFor="dockerImage">Docker Image</Label>
+                <Input
+                  id="dockerImage"
+                  value={fields.dockerImage}
+                  onChange={e => set('dockerImage', e.target.value)}
+                  placeholder="ghcr.io/…"
+                />
               </div>
             </div>
           )}
 
-          <div>
-            <span style={label}>Input (JSON)</span>
-            <textarea
+          <div className="space-y-1.5">
+            <Label htmlFor="input">Input (JSON)</Label>
+            <Textarea
+              id="input"
               value={fields.input}
               onChange={e => set('input', e.target.value)}
-              style={{
-                ...field,
-                height: 'auto',
-                minHeight: 80,
-                padding: '8px 10px',
-                resize: 'vertical',
-                fontFamily: 'monospace',
-                fontSize: 12,
-                lineHeight: 1.5,
-              }}
+              className="min-h-20 font-mono text-xs"
               placeholder="{}"
             />
           </div>
 
-          {error && <p style={{ fontSize: 12, color: '#ef4444', marginTop: -4 }}>{error}</p>}
+          {error && (
+            <p className="text-sm text-destructive">{error}</p>
+          )}
 
-          <button
-            onClick={submit}
-            disabled={submitting}
-            style={{
-              width: '100%',
-              height: 36,
-              background: submitting ? 'rgba(124,92,252,0.5)' : '#7c5cfc',
-              color: 'white',
-              border: 'none',
-              borderRadius: 7,
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: submitting ? 'not-allowed' : 'pointer',
-              fontFamily: 'inherit',
-              transition: 'background 0.1s',
-              marginTop: 2,
-            }}
-            onMouseEnter={e => { if (!submitting) (e.currentTarget as HTMLButtonElement).style.background = '#6d4ef0' }}
-            onMouseLeave={e => { if (!submitting) (e.currentTarget as HTMLButtonElement).style.background = '#7c5cfc' }}
-          >
+          <Button className="w-full" onClick={submit} disabled={submitting}>
             {submitting ? 'Submitting…' : 'Submit Run'}
-          </button>
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

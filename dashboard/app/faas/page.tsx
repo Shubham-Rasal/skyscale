@@ -2,10 +2,18 @@
 
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Sidebar } from '@/components/Sidebar'
+import { DashboardShell } from '@/components/dashboard/dashboard-shell'
+import { PageHeader } from '@/components/dashboard/page-header'
+import { StatusBadge } from '@/components/dashboard/status-badge'
 import { useRealtimeStream } from '@/hooks/useRealtimeStream'
 import { api } from '@/lib/api'
 import type { FaasContainer, FaasTemplate } from '@/lib/faas/types'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
 
 export default function FaasPage() {
   const { connected } = useRealtimeStream()
@@ -50,22 +58,15 @@ export default function FaasPage() {
         }
       }
     })()
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
     const needsPoll = containers.some(
-      (c) =>
-        c.status === 'deploying' ||
-        c.status === 'stopping' ||
-        c.status === 'running',
+      (c) => c.status === 'deploying' || c.status === 'stopping' || c.status === 'running',
     )
     if (!needsPoll) return
-    const t = setInterval(() => {
-      void refresh()
-    }, 2500)
+    const t = setInterval(() => { void refresh() }, 2500)
     return () => clearInterval(t)
   }, [containers, refresh])
 
@@ -124,313 +125,175 @@ export default function FaasPage() {
   }
 
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)' }}>
-      <Sidebar connected={connected} />
+    <DashboardShell connected={connected}>
+      <PageHeader
+        title="Sandboxes"
+        description="Deploy and stop Railway services via the public GraphQL API."
+        badge="Railway API"
+      />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        <header style={{
-          height: 56,
-          borderBottom: '1px solid var(--border)',
-          display: 'flex',
-          alignItems: 'center',
-          padding: '0 24px',
-          gap: 12,
-          flexShrink: 0,
-        }}>
-          <div style={{ flex: 1 }}>
-            <h1 style={{
-              fontFamily: 'var(--font-grotesk), sans-serif',
-              fontSize: 15,
-              fontWeight: 600,
-              color: 'var(--text-primary)',
-              letterSpacing: '-0.02em',
-            }}>
-              FaaS Containers
-            </h1>
-            <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-              Deploy and stop Railway services via the public GraphQL API (server-side token).
-            </p>
-          </div>
-          <span style={{
-            fontSize: 10,
-            fontWeight: 600,
-            padding: '2px 8px',
-            borderRadius: 4,
-            background: 'var(--accent-dim)',
-            color: 'var(--accent)',
-            border: '1px solid var(--accent-border)',
-            letterSpacing: '0.06em',
-          }}>
-            RAILWAY API
-          </span>
-        </header>
-
-        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-          {/* Templates */}
-          <section style={{
-            width: '38%',
-            minWidth: 280,
-            borderRight: '1px solid var(--border)',
-            overflowY: 'auto',
-            padding: '16px 16px 24px',
-          }}>
-            <SectionTitle>Templates</SectionTitle>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {templates.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => spinUp(t.id)}
-                  disabled={busy !== null}
-                  style={{
-                    textAlign: 'left',
-                    padding: '12px 14px',
-                    borderRadius: 10,
-                    border: '1px solid var(--border)',
-                    background: 'var(--surface)',
-                    cursor: busy ? 'wait' : 'pointer',
-                    fontFamily: 'inherit',
-                    color: 'var(--text-primary)',
-                    transition: 'border-color 0.15s, background 0.15s',
-                  }}
-                >
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{t.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.45, marginBottom: 8 }}>
-                    {t.description}
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <aside className="w-[min(380px,38%)] shrink-0 overflow-y-auto border-r border-border p-4">
+          <SectionLabel>Templates</SectionLabel>
+          <div className="space-y-2">
+            {templates.map((t) => (
+              <Card
+                key={t.id}
+                className="cursor-pointer transition-colors hover:border-primary/40 hover:bg-accent/20"
+              >
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-sm">{t.name}</CardTitle>
+                  <CardDescription className="text-xs leading-relaxed">{t.description}</CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 pt-0">
+                  <div className="mb-3 flex flex-wrap gap-1">
                     {t.tags.map((tag) => (
-                      <span key={tag} style={{
-                        fontSize: 9,
-                        fontWeight: 600,
-                        padding: '2px 6px',
-                        borderRadius: 4,
-                        background: 'var(--bg-active)',
-                        color: 'var(--text-secondary)',
-                        border: '1px solid var(--border)',
-                      }}>
-                        {tag}
-                      </span>
+                      <Badge key={tag} variant="secondary" className="text-[10px]">{tag}</Badge>
                     ))}
                   </div>
-                  <div style={{ marginTop: 10, fontSize: 10, color: 'var(--accent)' }}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-0 text-primary hover:bg-transparent"
+                    disabled={busy !== null}
+                    onClick={() => spinUp(t.id)}
+                  >
                     {busy === `up:${t.id}` ? 'Spinning up…' : 'Spin Up →'}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </aside>
 
-          {/* Detail */}
-          <section style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-            {error && (
-              <div style={{
-                margin: '12px 16px 0',
-                padding: '10px 12px',
-                borderRadius: 8,
-                background: 'var(--error-dim)',
-                border: '1px solid rgba(239,68,68,0.35)',
-                color: 'var(--error)',
-                fontSize: 12,
-              }}>
-                {error}
+        <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {error && (
+            <div className="mx-4 mt-3 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
+          <div className="border-b border-border p-4">
+            <SectionLabel>Active & recent</SectionLabel>
+            {containers.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No sandboxes yet — pick a template to spin one up.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {containers.map((c) => (
+                  <Button
+                    key={c.id}
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      'h-auto gap-2 py-1.5',
+                      selectedId === c.id && 'border-primary/40 bg-primary/10',
+                    )}
+                    onClick={() => setSelectedId(c.id)}
+                  >
+                    <StatusDot status={c.status} />
+                    <span className="font-medium">{c.templateName}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">{c.id.slice(0, 8)}…</span>
+                    <StatusBadge status={c.status} className="scale-90" />
+                  </Button>
+                ))}
               </div>
             )}
+          </div>
 
-            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
-              <SectionTitle>Active & recent</SectionTitle>
-              {containers.length === 0 ? (
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  No containers yet — pick a template to spin one up.
+          {selected ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex flex-wrap items-center gap-3 border-b border-border p-4">
+                <div className="min-w-[200px] flex-1">
+                  <p className="mb-1 text-xs text-muted-foreground">Endpoint</p>
+                  <code className={cn(
+                    'block break-all rounded-md border border-border bg-muted/40 px-2.5 py-2 font-mono text-[11px]',
+                    selected.endpointUrl ? 'text-[var(--success)]' : 'text-muted-foreground',
+                  )}>
+                    {selected.endpointUrl || '— not ready —'}
+                  </code>
                 </div>
-              ) : (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {containers.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => setSelectedId(c.id)}
-                      style={{
-                        padding: '6px 10px',
-                        borderRadius: 8,
-                        border: selectedId === c.id ? '1px solid var(--accent-border)' : '1px solid var(--border)',
-                        background: selectedId === c.id ? 'var(--accent-dim)' : 'var(--surface)',
-                        color: 'var(--text-primary)',
-                        fontSize: 11,
-                        cursor: 'pointer',
-                        fontFamily: 'inherit',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                      }}
-                    >
-                      <StatusDot status={c.status} />
-                      <span style={{ fontWeight: 500 }}>{c.templateName}</span>
-                      <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 10 }}>
-                        {c.id.slice(0, 8)}…
-                      </span>
-                      <span style={{
-                        fontSize: 9,
-                        textTransform: 'uppercase',
-                        color: 'var(--text-secondary)',
-                      }}>
-                        {c.status}
-                      </span>
-                    </button>
-                  ))}
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={busy !== null || selected.status === 'stopped'}
+                  onClick={() => spinDown(selected.id)}
+                >
+                  Spin Down
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={busy !== null || selected.status !== 'running'}
+                  onClick={() => runTest(selected.id)}
+                >
+                  Run test
+                </Button>
+              </div>
+
+              <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
+                <div className="flex min-h-0 flex-col border-b border-border lg:border-b-0 lg:border-r">
+                  <PanelHeader>Logs</PanelHeader>
+                  <ScrollArea className="flex-1 p-3 font-mono text-[11px] leading-relaxed">
+                    {selected.logs.length === 0 ? (
+                      <span className="text-muted-foreground">No logs yet.</span>
+                    ) : (
+                      selected.logs.map((line, i) => (
+                        <div key={`${line.ts}-${i}`} className="mb-1.5">
+                          <span className="text-muted-foreground">{line.ts.slice(11, 23)}</span>{' '}
+                          <span className={cn(
+                            line.level === 'error' && 'text-destructive',
+                            line.level === 'warn' && 'text-[var(--warning)]',
+                            line.level !== 'error' && line.level !== 'warn' && 'text-muted-foreground',
+                          )}>
+                            [{line.level}]
+                          </span>{' '}
+                          {line.message}
+                        </div>
+                      ))
+                    )}
+                  </ScrollArea>
                 </div>
+
+                <div className="flex min-h-0 flex-col">
+                  <PanelHeader>Test request body (JSON)</PanelHeader>
+                  <Textarea
+                    key={`tb-${selected.id}-${templates.length}`}
+                    ref={testBodyRef}
+                    defaultValue={defaultTestBodyJson}
+                    className="mx-3 mb-2 min-h-[140px] flex-1 resize-y font-mono text-[11px]"
+                  />
+                  <PanelHeader>Test response</PanelHeader>
+                  <pre className="mx-3 mb-3 flex-1 overflow-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-[11px] text-muted-foreground">
+                    {testResult || 'Run a test when status is running.'}
+                  </pre>
+                </div>
+              </div>
+
+              {selected.errorMessage && (
+                <p className="px-4 pb-3 text-xs text-destructive">{selected.errorMessage}</p>
               )}
             </div>
-
-            {selected ? (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                <div style={{
-                  padding: '14px 20px',
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 10,
-                  alignItems: 'center',
-                  borderBottom: '1px solid var(--border)',
-                }}>
-                  <div style={{ flex: 1, minWidth: 200 }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4 }}>Endpoint</div>
-                    <code style={{
-                      display: 'block',
-                      fontSize: 11,
-                      padding: '8px 10px',
-                      background: 'var(--surface)',
-                      borderRadius: 6,
-                      border: '1px solid var(--border)',
-                      wordBreak: 'break-all',
-                      color: selected.endpointUrl ? 'var(--success)' : 'var(--text-muted)',
-                    }}>
-                      {selected.endpointUrl || '— not ready —'}
-                    </code>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <ActionBtn
-                      label="Spin Down"
-                      variant="danger"
-                      disabled={busy !== null || selected.status === 'stopped'}
-                      onClick={() => spinDown(selected.id)}
-                    />
-                    <ActionBtn
-                      label="Run test"
-                      disabled={busy !== null || selected.status !== 'running'}
-                      onClick={() => runTest(selected.id)}
-                    />
-                  </div>
-                </div>
-
-                <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0, minHeight: 0 }}>
-                  <div style={{ borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                    <PanelHeader>Logs</PanelHeader>
-                    <div style={{
-                      flex: 1,
-                      overflowY: 'auto',
-                      padding: '12px 14px',
-                      fontFamily: 'ui-monospace, monospace',
-                      fontSize: 11,
-                      lineHeight: 1.5,
-                    }}>
-                      {selected.logs.length === 0 ? (
-                        <span style={{ color: 'var(--text-muted)' }}>No logs yet.</span>
-                      ) : (
-                        selected.logs.map((line, i) => (
-                          <div key={`${line.ts}-${i}`} style={{ marginBottom: 6 }}>
-                            <span style={{ color: 'var(--text-muted)' }}>{line.ts.slice(11, 23)}</span>{' '}
-                            <span style={{
-                              color: line.level === 'error' ? 'var(--error)' : line.level === 'warn' ? 'var(--warning)' : 'var(--text-secondary)',
-                            }}>
-                              [{line.level}]
-                            </span>{' '}
-                            {line.message}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                    <PanelHeader>Test request body (JSON)</PanelHeader>
-                    <textarea
-                      key={`tb-${selected.id}-${templates.length}`}
-                      ref={testBodyRef}
-                      defaultValue={defaultTestBodyJson}
-                      style={{
-                        flex: 1,
-                        minHeight: 140,
-                        margin: '0 14px 10px',
-                        padding: 12,
-                        borderRadius: 8,
-                        border: '1px solid var(--border)',
-                        background: 'var(--surface)',
-                        color: 'var(--text-primary)',
-                        fontFamily: 'ui-monospace, monospace',
-                        fontSize: 11,
-                        resize: 'vertical',
-                      }}
-                    />
-                    <PanelHeader>Test response</PanelHeader>
-                    <pre style={{
-                      flex: 1,
-                      overflow: 'auto',
-                      margin: '0 14px 14px',
-                      padding: 12,
-                      borderRadius: 8,
-                      border: '1px solid var(--border)',
-                      background: 'var(--bg-panel)',
-                      fontSize: 11,
-                      color: 'var(--text-secondary)',
-                    }}>
-                      {testResult || 'Run a test when status is running.'}
-                    </pre>
-                  </div>
-                </div>
-
-                {selected.errorMessage && (
-                  <div style={{ padding: '0 20px 12px', fontSize: 11, color: 'var(--error)' }}>
-                    {selected.errorMessage}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-                Select a container above or spin up a new one.
-              </div>
-            )}
-          </section>
-        </div>
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+              Select a sandbox above or spin up a new one.
+            </div>
+          )}
+        </section>
       </div>
-    </div>
+    </DashboardShell>
   )
 }
 
-function SectionTitle({ children }: { children: ReactNode }) {
+function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div style={{
-      fontSize: 10,
-      fontWeight: 600,
-      color: 'var(--text-secondary)',
-      letterSpacing: '0.08em',
-      textTransform: 'uppercase',
-      marginBottom: 12,
-    }}>
+    <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
       {children}
-    </div>
+    </p>
   )
 }
 
 function PanelHeader({ children }: { children: ReactNode }) {
   return (
-    <div style={{
-      padding: '10px 14px',
-      fontSize: 10,
-      fontWeight: 600,
-      color: 'var(--text-muted)',
-      letterSpacing: '0.06em',
-      textTransform: 'uppercase',
-      borderBottom: '1px solid var(--border)',
-    }}>
+    <div className="border-b border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
       {children}
     </div>
   )
@@ -438,53 +301,19 @@ function PanelHeader({ children }: { children: ReactNode }) {
 
 function StatusDot({ status }: { status: FaasContainer['status'] }) {
   const color =
-    status === 'running' ? 'var(--success)' :
-    status === 'failed' ? 'var(--error)' :
-    status === 'stopped' ? 'var(--text-muted)' :
-    'var(--running)'
-  return (
-    <span style={{
-      width: 8,
-      height: 8,
-      borderRadius: '50%',
-      background: color,
-      flexShrink: 0,
-      animation: (status === 'creating' || status === 'deploying' || status === 'stopping') ? 'pulse 1.2s ease-in-out infinite' : undefined,
-    }} />
-  )
-}
+    status === 'running' ? 'bg-[var(--success)]' :
+    status === 'failed' ? 'bg-destructive' :
+    status === 'stopped' ? 'bg-muted-foreground/40' :
+    'bg-[var(--running)]'
 
-function ActionBtn({
-  label,
-  onClick,
-  disabled,
-  variant,
-}: {
-  label: string
-  onClick: () => void
-  disabled?: boolean
-  variant?: 'danger'
-}) {
-  const danger = variant === 'danger'
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        padding: '8px 14px',
-        borderRadius: 8,
-        border: `1px solid ${danger ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`,
-        background: danger ? 'var(--error-dim)' : 'var(--accent)',
-        color: danger ? 'var(--error)' : 'white',
-        fontSize: 12,
-        fontWeight: 500,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        fontFamily: 'inherit',
-        opacity: disabled ? 0.5 : 1,
-      }}
-    >
-      {label}
-    </button>
+    <span
+      className={cn(
+        'size-2 shrink-0 rounded-full',
+        color,
+        (status === 'creating' || status === 'deploying' || status === 'stopping') &&
+          'animate-[pulse_1.2s_ease-in-out_infinite]',
+      )}
+    />
   )
 }

@@ -3,6 +3,10 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -49,150 +53,94 @@ export default function LoginPage() {
   }
 
   return (
-    <main style={{
-      minHeight: "100vh",
-      display: "grid",
-      placeItems: "center",
-      background: "radial-gradient(circle at top, rgba(124,92,252,0.16), transparent 32%), var(--bg)",
-      padding: 24,
-    }}>
-      <form
-        onSubmit={submit}
-        style={{
-          width: "100%",
-          maxWidth: 390,
-          background: "var(--bg-panel)",
-          border: "1px solid var(--border-light)",
-          borderRadius: 16,
-          padding: 28,
-          boxShadow: "0 24px 70px rgba(0,0,0,0.45)",
-        }}
-      >
-        <div style={{ marginBottom: 24 }}>
-          <div style={{
-            fontFamily: "var(--font-grotesk), sans-serif",
-            fontSize: 22,
-            fontWeight: 600,
-            letterSpacing: "-0.04em",
-            marginBottom: 8,
-          }}>
-            {mode === "signin" ? "Sign in to Skyscale" : "Create your Skyscale account"}
-          </div>
-          <p style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
-            GPU runs are available only to authenticated users.
-          </p>
-        </div>
+    <main className="grid min-h-screen place-items-center bg-background p-6">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,oklch(0.4365_0.1044_156.7556_/_0.12),transparent_40%)]" />
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {mode === "signup" && (
-            <label style={labelStyle}>
-              Name
-              <input
-                value={name}
-                onChange={event => setName(event.target.value)}
-                style={inputStyle}
-                placeholder="Ada Lovelace"
+      <Card className="relative z-10 w-full max-w-md shadow-lg">
+        <CardHeader className="space-y-1">
+          <div className="mb-2 flex size-9 items-center justify-center rounded-lg bg-primary">
+            <svg width="15" height="15" viewBox="0 0 14 14" fill="none" aria-hidden>
+              <path
+                d="M7 1L13 4.5V9.5L7 13L1 9.5V4.5L7 1Z"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinejoin="round"
+                className="text-primary-foreground"
               />
-            </label>
-          )}
+            </svg>
+          </div>
+          <CardTitle className="text-xl tracking-tight">
+            {mode === "signin" ? "Sign in to Skyscale" : "Create your account"}
+          </CardTitle>
+          <CardDescription>
+            GPU runs are available only to authenticated users.
+          </CardDescription>
+        </CardHeader>
 
-          <label style={labelStyle}>
-            Email
-            <input
-              value={email}
-              onChange={event => setEmail(event.target.value)}
-              style={inputStyle}
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              required
-            />
-          </label>
+        <CardContent>
+          <form onSubmit={submit} className="space-y-4">
+            {mode === "signup" && (
+              <div className="space-y-2">
+                <Label htmlFor="name">Name</Label>
+                <Input
+                  id="name"
+                  value={name}
+                  onChange={event => setName(event.target.value)}
+                  placeholder="Ada Lovelace"
+                />
+              </div>
+            )}
 
-          <label style={labelStyle}>
-            Password
-            <input
-              value={password}
-              onChange={event => setPassword(event.target.value)}
-              style={inputStyle}
-              type="password"
-              autoComplete={mode === "signin" ? "current-password" : "new-password"}
-              minLength={8}
-              required
-            />
-          </label>
-        </div>
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                value={email}
+                onChange={event => setEmail(event.target.value)}
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                required
+              />
+            </div>
 
-        {error && (
-          <p style={{
-            color: "var(--error)",
-            background: "var(--error-dim)",
-            border: "1px solid rgba(239,68,68,0.25)",
-            borderRadius: 8,
-            padding: "9px 10px",
-            marginTop: 14,
-          }}>
-            {error}
-          </p>
-        )}
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                value={password}
+                onChange={event => setPassword(event.target.value)}
+                type="password"
+                autoComplete={mode === "signin" ? "current-password" : "new-password"}
+                minLength={8}
+                required
+              />
+            </div>
 
-        <button
-          disabled={submitting}
-          style={{
-            width: "100%",
-            height: 40,
-            marginTop: 18,
-            background: submitting ? "rgba(124,92,252,0.5)" : "var(--accent)",
-            color: "white",
-            border: "none",
-            borderRadius: 9,
-            fontFamily: "inherit",
-            fontWeight: 600,
-            cursor: submitting ? "not-allowed" : "pointer",
-          }}
-        >
-          {submitting ? "Working..." : mode === "signin" ? "Sign in" : "Create account"}
-        </button>
+            {error && (
+              <p className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </p>
+            )}
 
-        <button
-          type="button"
-          onClick={() => {
-            setMode(mode === "signin" ? "signup" : "signin");
-            setError("");
-          }}
-          style={{
-            width: "100%",
-            marginTop: 14,
-            background: "transparent",
-            color: "var(--text-secondary)",
-            border: "none",
-            cursor: "pointer",
-            fontFamily: "inherit",
-          }}
-        >
-          {mode === "signin" ? "Need an account? Sign up" : "Already have an account? Sign in"}
-        </button>
-      </form>
+            <Button type="submit" className="w-full" disabled={submitting}>
+              {submitting ? "Working…" : mode === "signin" ? "Sign in" : "Create account"}
+            </Button>
+
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full"
+              onClick={() => {
+                setMode(mode === "signin" ? "signup" : "signin");
+                setError("");
+              }}
+            >
+              {mode === "signin" ? "Need an account? Sign up" : "Already have an account? Sign in"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </main>
   );
 }
-
-const labelStyle: React.CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 6,
-  color: "var(--text-secondary)",
-  fontSize: 12,
-  fontWeight: 500,
-};
-
-const inputStyle: React.CSSProperties = {
-  height: 38,
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  color: "var(--text-primary)",
-  outline: "none",
-  padding: "0 11px",
-  fontFamily: "inherit",
-};

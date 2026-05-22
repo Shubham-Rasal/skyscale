@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
+import { Button } from "@/components/ui/button";
 
 export function AuthStatus() {
   const router = useRouter();
@@ -9,49 +10,33 @@ export function AuthStatus() {
 
   if (isPending) {
     return (
-      <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-        Checking session...
-      </span>
+      <span className="text-xs text-muted-foreground">Checking session…</span>
     );
   }
 
   if (!session) {
     return (
-      <button
-        onClick={() => router.push("/login?next=/")}
-        style={authButtonStyle}
-      >
+      <Button variant="outline" size="sm" onClick={() => router.push("/login?next=/")}>
         Sign in
-      </button>
+      </Button>
     );
   }
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
+    <div className="flex items-center gap-2">
+      <span className="hidden max-w-[180px] truncate text-xs text-muted-foreground md:inline">
         {session.user.email}
       </span>
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={async () => {
           await authClient.signOut();
           router.refresh();
         }}
-        style={authButtonStyle}
       >
         Sign out
-      </button>
+      </Button>
     </div>
   );
 }
-
-const authButtonStyle: React.CSSProperties = {
-  padding: "5px 12px",
-  background: "var(--bg-active)",
-  border: "1px solid var(--border)",
-  borderRadius: 7,
-  color: "var(--text-primary)",
-  fontSize: 12,
-  fontWeight: 500,
-  cursor: "pointer",
-  fontFamily: "inherit",
-};
