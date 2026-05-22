@@ -82,9 +82,9 @@ export function TrainingTable({ active, recent, trainingMetrics, onNewRun, onSel
     return (
       <EmptyState
         icon={<TrendingUp className="size-5" />}
-        title="Run your first training job"
-        description="Submit a GPU training job and watch metrics stream live to your dashboard."
-        action={{ label: 'New Run', onClick: onNewRun }}
+        title="No rollouts yet"
+        description="Launch a rollout worker to collect trajectories for RL training."
+        action={{ label: 'New Rollout', onClick: onNewRun }}
       />
     )
   }

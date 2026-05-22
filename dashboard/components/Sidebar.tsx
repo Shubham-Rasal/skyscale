@@ -6,7 +6,6 @@ import {
   BarChart3,
   Box,
   Cpu,
-  FlaskConical,
   LayoutGrid,
   TrendingUp,
 } from 'lucide-react'
@@ -30,7 +29,6 @@ const NAV = [
     section: 'Lab',
     items: [
       { label: 'Training', href: '/', icon: TrendingUp },
-      { label: 'RL Training', href: '/rl-training', icon: FlaskConical },
       { label: 'Templates', href: '/templates', icon: LayoutGrid },
       { label: 'Sandboxes', href: '/faas', icon: Box },
     ],
