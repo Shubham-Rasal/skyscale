@@ -109,8 +109,8 @@ func (p *HuggingFaceProvider) Deploy(ctx context.Context, spec DeploySpec) (Depl
 		TimeoutSeconds: hfJobTimeoutSeconds(),
 		Attempts:       1,
 		Labels: map[string]string{
-			"skyscale.job_id":       sanitizeLabelValue(spec.JobID),
-			"skyscale.execution_id": sanitizeLabelValue(spec.ExecutionID),
+			"skyscale_job_id":       sanitizeLabelValue(spec.JobID),
+			"skyscale_execution_id": sanitizeLabelValue(spec.ExecutionID),
 		},
 	}
 
