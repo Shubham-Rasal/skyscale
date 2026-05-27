@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 )
@@ -20,10 +21,6 @@ type ModalProvider struct {
 }
 
 func NewModalProvider(logger *logrus.Logger) *ModalProvider {
-	_, thisFile, _, _ := runtime.Caller(0)
-	// dispatch.py lives at control-plane/modal/dispatch.py
-	scriptPath := filepath.Join(filepath.Dir(thisFile), "..", "modal", "dispatch.py")
-
 	python := "python3"
 	if p := os.Getenv("MODAL_PYTHON"); p != "" {
 		python = p
@@ -32,8 +29,32 @@ func NewModalProvider(logger *logrus.Logger) *ModalProvider {
 	return &ModalProvider{
 		logger:     logger,
 		pythonPath: python,
-		scriptPath: scriptPath,
+		scriptPath: resolveModalDispatchScript(),
 	}
+}
+
+func resolveModalDispatchScript() string {
+	if p := os.Getenv("MODAL_DISPATCH_SCRIPT"); p != "" {
+		return p
+	}
+	candidates := []string{
+		"/opt/skyscale/control-plane/modal/dispatch.py",
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, "control-plane", "modal", "dispatch.py"),
+			filepath.Join(dir, "modal", "dispatch.py"),
+		)
+	}
+	_, thisFile, _, _ := runtime.Caller(0)
+	candidates = append(candidates, filepath.Join(filepath.Dir(thisFile), "..", "modal", "dispatch.py"))
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return "/opt/skyscale/control-plane/modal/dispatch.py"
 }
 
 func (p *ModalProvider) Name() string { return "modal" }
@@ -53,35 +74,50 @@ func (p *ModalProvider) Deploy(ctx context.Context, spec DeploySpec) (DeployResu
 	cmd := exec.CommandContext(ctx, p.pythonPath, p.scriptPath, string(paramsJSON))
 	cmd.Env = append(os.Environ())
 
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
+	output := strings.TrimSpace(string(out))
 	if err != nil {
-		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = string(ee.Stderr)
+		return DeployResult{}, fmt.Errorf("modal dispatch: %w\n%s", err, output)
+	}
+	// Log Modal sidecar progress lines (written to stderr) for debugging slow cold starts.
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "{") {
+			continue
 		}
-		return DeployResult{}, fmt.Errorf("modal dispatch: %w\n%s", err, stderr)
+		p.logger.Infof("modal[%s]: %s", spec.JobID, line)
+	}
+	// Final JSON line is the dispatch result.
+	jsonLine := output
+	if idx := strings.LastIndex(output, "\n"); idx >= 0 {
+		jsonLine = strings.TrimSpace(output[idx+1:])
 	}
 
 	var result struct {
-		SandboxID string `json:"sandbox_id"`
-		Status    string `json:"status"`
-		Error     string `json:"error"`
+		SandboxID  string `json:"sandbox_id"`
+		Status     string `json:"status"`
+		Error      string `json:"error"`
+		PolicyURL  string `json:"policy_url"`
 	}
-	if err := json.Unmarshal(out, &result); err != nil {
-		return DeployResult{}, fmt.Errorf("modal: parse output %q: %w", string(out), err)
+	if err := json.Unmarshal([]byte(jsonLine), &result); err != nil {
+		return DeployResult{}, fmt.Errorf("modal: parse output %q: %w", jsonLine, err)
 	}
 	if result.Error != "" {
 		return DeployResult{}, fmt.Errorf("modal: %s", result.Error)
 	}
 	if result.SandboxID == "" {
-		return DeployResult{}, fmt.Errorf("modal: no sandbox_id in output: %s", string(out))
+		return DeployResult{}, fmt.Errorf("modal: no sandbox_id in output: %s", jsonLine)
 	}
 
 	p.logger.Infof("modal: sandbox %s started (job=%s gpu=%s)", result.SandboxID, spec.JobID, spec.GPUModel)
+	addr := "modal.com"
+	if result.PolicyURL != "" {
+		addr = result.PolicyURL
+	}
 	return DeployResult{
 		DeploymentID: result.SandboxID,
 		ProviderName: "modal",
-		ProviderAddr: "modal.com",
+		ProviderAddr: addr,
 	}, nil
 }
 
