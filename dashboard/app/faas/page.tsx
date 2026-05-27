@@ -1,18 +1,20 @@
 'use client'
 
-import type { ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Box, Plus, Search, Server } from 'lucide-react'
 import { DashboardShell } from '@/components/dashboard/dashboard-shell'
 import { PageHeader } from '@/components/dashboard/page-header'
+import { StatBadge } from '@/components/dashboard/stat-badge'
+import { EmptyState } from '@/components/dashboard/empty-state'
 import { StatusBadge } from '@/components/dashboard/status-badge'
+import { DeployTemplateDialog } from '@/components/faas/deploy-template-dialog'
+import { ContainerDetail } from '@/components/faas/container-detail'
 import { useRealtimeStream } from '@/hooks/useRealtimeStream'
 import { api } from '@/lib/api'
 import type { FaasContainer, FaasTemplate } from '@/lib/faas/types'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 
 export default function FaasPage() {
@@ -23,12 +25,40 @@ export default function FaasPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<string | null>(null)
-  const testBodyRef = useRef<HTMLTextAreaElement | null>(null)
+  const [deployOpen, setDeployOpen] = useState(false)
+  const [query, setQuery] = useState('')
 
   const selected = useMemo(
     () => containers.find((c) => c.id === selectedId) ?? null,
     [containers, selectedId],
   )
+
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.id === selected?.templateId),
+    [templates, selected?.templateId],
+  )
+
+  const sortedContainers = useMemo(
+    () => [...containers].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [containers],
+  )
+
+  const filteredContainers = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return sortedContainers
+    return sortedContainers.filter(
+      (c) =>
+        c.templateName.toLowerCase().includes(q) ||
+        c.id.toLowerCase().includes(q) ||
+        c.status.toLowerCase().includes(q),
+    )
+  }, [sortedContainers, query])
+
+  const stats = useMemo(() => ({
+    running: containers.filter((c) => c.status === 'running').length,
+    deploying: containers.filter((c) => ['creating', 'deploying', 'stopping'].includes(c.status)).length,
+    total: containers.length,
+  }), [containers])
 
   const refresh = useCallback(async () => {
     try {
@@ -62,8 +92,17 @@ export default function FaasPage() {
   }, [])
 
   useEffect(() => {
+    if (selectedId && containers.some((c) => c.id === selectedId)) return
+    if (sortedContainers.length > 0) {
+      setSelectedId(sortedContainers[0].id)
+    } else {
+      setSelectedId(null)
+    }
+  }, [containers, selectedId, sortedContainers])
+
+  useEffect(() => {
     const needsPoll = containers.some(
-      (c) => c.status === 'deploying' || c.status === 'stopping' || c.status === 'running',
+      (c) => c.status === 'deploying' || c.status === 'stopping' || c.status === 'running' || c.status === 'creating',
     )
     if (!needsPoll) return
     const t = setInterval(() => { void refresh() }, 2500)
@@ -82,6 +121,7 @@ export default function FaasPage() {
     try {
       const { container } = await api.createFaasContainer(templateId)
       setSelectedId(container.id)
+      setDeployOpen(false)
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -103,17 +143,15 @@ export default function FaasPage() {
     }
   }
 
-  async function runTest(id: string) {
+  async function runTest(id: string, body: Record<string, unknown>) {
+    if ('__parse_error' in body) {
+      setTestResult(JSON.stringify({ error: 'Test body must be valid JSON' }, null, 2))
+      return
+    }
+
     setBusy(`test:${id}`)
     setTestResult(null)
     try {
-      const raw = testBodyRef.current?.value ?? '{}'
-      let body: Record<string, unknown>
-      try {
-        body = JSON.parse(raw) as Record<string, unknown>
-      } catch {
-        throw new Error('Test body must be valid JSON')
-      }
       const res = await api.testFaasContainer(id, body)
       setTestResult(JSON.stringify(res, null, 2))
       await refresh()
@@ -128,192 +166,155 @@ export default function FaasPage() {
     <DashboardShell connected={connected}>
       <PageHeader
         title="Sandboxes"
-        description="Deploy and stop Railway services via the public GraphQL API."
-        badge="Railway API"
+        description="Deploy isolated Railway services, monitor logs, and invoke endpoints."
+        badge="Railway"
+        stats={
+          <>
+            <StatBadge label="Running" value={stats.running} tone="success" />
+            <StatBadge label="Deploying" value={stats.deploying} tone="running" />
+            <StatBadge label="Total" value={stats.total} tone="muted" />
+          </>
+        }
+        actions={
+          <Button size="sm" onClick={() => setDeployOpen(true)} disabled={busy?.startsWith('up:')}>
+            <Plus className="size-3.5" />
+            Deploy sandbox
+          </Button>
+        }
       />
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <aside className="w-[min(380px,38%)] shrink-0 overflow-y-auto border-r border-border p-4">
-          <SectionLabel>Templates</SectionLabel>
-          <div className="space-y-2">
-            {templates.map((t) => (
-              <Card
-                key={t.id}
-                className="cursor-pointer transition-colors hover:border-primary/40 hover:bg-accent/20"
+      {error && (
+        <div className="mx-6 mt-4 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {containers.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-6 py-10">
+          <EmptyState
+            icon={<Box className="size-5" />}
+            title="No sandboxes deployed"
+            description="Deploy a pre-built template to get an isolated service with a live endpoint, logs, and a built-in test harness."
+            action={{ label: 'Deploy sandbox', onClick: () => setDeployOpen(true) }}
+          />
+          <div className="mt-8 grid w-full max-w-4xl gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {templates.slice(0, 3).map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                onClick={() => setDeployOpen(true)}
+                className="rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/20"
               >
-                <CardHeader className="p-4 pb-2">
-                  <CardTitle className="text-sm">{t.name}</CardTitle>
-                  <CardDescription className="text-xs leading-relaxed">{t.description}</CardDescription>
-                </CardHeader>
-                <CardContent className="p-4 pt-0">
-                  <div className="mb-3 flex flex-wrap gap-1">
-                    {t.tags.map((tag) => (
-                      <Badge key={tag} variant="secondary" className="text-[10px]">{tag}</Badge>
-                    ))}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-0 text-primary hover:bg-transparent"
-                    disabled={busy !== null}
-                    onClick={() => spinUp(t.id)}
-                  >
-                    {busy === `up:${t.id}` ? 'Spinning up…' : 'Spin Up →'}
-                  </Button>
-                </CardContent>
-              </Card>
+                <p className="text-sm font-medium">{template.name}</p>
+                <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                  {template.description}
+                </p>
+              </button>
             ))}
           </div>
-        </aside>
-
-        <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {error && (
-            <div className="mx-4 mt-3 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <aside className="flex w-72 shrink-0 flex-col border-r border-border bg-muted/10">
+            <div className="space-y-3 border-b border-border p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Sandboxes
+                </p>
+                <span className="text-xs tabular-nums text-muted-foreground">{filteredContainers.length}</span>
+              </div>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search sandboxes…"
+                  className="h-8 bg-background pl-8 text-xs"
+                />
+              </div>
             </div>
-          )}
 
-          <div className="border-b border-border p-4">
-            <SectionLabel>Active & recent</SectionLabel>
-            {containers.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No sandboxes yet — pick a template to spin one up.</p>
+            <ScrollArea className="flex-1">
+              <div className="space-y-1 p-2">
+                {filteredContainers.length === 0 ? (
+                  <p className="px-2 py-6 text-center text-xs text-muted-foreground">No matches.</p>
+                ) : (
+                  filteredContainers.map((container) => (
+                    <button
+                      key={container.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(container.id)
+                        setTestResult(null)
+                      }}
+                      className={cn(
+                        'w-full rounded-lg border px-3 py-2.5 text-left transition-colors',
+                        selectedId === container.id
+                          ? 'border-primary/40 bg-primary/10'
+                          : 'border-transparent hover:border-border hover:bg-accent/30',
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">{container.templateName}</p>
+                          <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+                            {container.id}
+                          </p>
+                        </div>
+                        <StatusBadge status={container.status} className="shrink-0 scale-90" />
+                      </div>
+                      <p className="mt-2 text-[10px] text-muted-foreground">
+                        Updated {relativeTime(container.updatedAt)}
+                      </p>
+                    </button>
+                  ))
+                )}
+              </div>
+            </ScrollArea>
+          </aside>
+
+          <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
+            {selected ? (
+              <ContainerDetail
+                key={selected.id}
+                container={selected}
+                template={selectedTemplate}
+                busy={busy}
+                testResult={testResult}
+                defaultTestBodyJson={defaultTestBodyJson}
+                onStop={() => spinDown(selected.id)}
+                onRunTest={(body) => runTest(selected.id, body)}
+              />
             ) : (
-              <div className="flex flex-wrap gap-2">
-                {containers.map((c) => (
-                  <Button
-                    key={c.id}
-                    variant="outline"
-                    size="sm"
-                    className={cn(
-                      'h-auto gap-2 py-1.5',
-                      selectedId === c.id && 'border-primary/40 bg-primary/10',
-                    )}
-                    onClick={() => setSelectedId(c.id)}
-                  >
-                    <StatusDot status={c.status} />
-                    <span className="font-medium">{c.templateName}</span>
-                    <span className="font-mono text-[10px] text-muted-foreground">{c.id.slice(0, 8)}…</span>
-                    <StatusBadge status={c.status} className="scale-90" />
-                  </Button>
-                ))}
+              <div className="flex flex-1 items-center justify-center">
+                <EmptyState
+                  icon={<Server className="size-5" />}
+                  title="Select a sandbox"
+                  description="Choose a deployment from the list to view its endpoint, logs, and test console."
+                />
               </div>
             )}
-          </div>
+          </section>
+        </div>
+      )}
 
-          {selected ? (
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="flex flex-wrap items-center gap-3 border-b border-border p-4">
-                <div className="min-w-[200px] flex-1">
-                  <p className="mb-1 text-xs text-muted-foreground">Endpoint</p>
-                  <code className={cn(
-                    'block break-all rounded-md border border-border bg-muted/40 px-2.5 py-2 font-mono text-[11px]',
-                    selected.endpointUrl ? 'text-[var(--success)]' : 'text-muted-foreground',
-                  )}>
-                    {selected.endpointUrl || '— not ready —'}
-                  </code>
-                </div>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  disabled={busy !== null || selected.status === 'stopped'}
-                  onClick={() => spinDown(selected.id)}
-                >
-                  Spin Down
-                </Button>
-                <Button
-                  size="sm"
-                  disabled={busy !== null || selected.status !== 'running'}
-                  onClick={() => runTest(selected.id)}
-                >
-                  Run test
-                </Button>
-              </div>
-
-              <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
-                <div className="flex min-h-0 flex-col border-b border-border lg:border-b-0 lg:border-r">
-                  <PanelHeader>Logs</PanelHeader>
-                  <ScrollArea className="flex-1 p-3 font-mono text-[11px] leading-relaxed">
-                    {selected.logs.length === 0 ? (
-                      <span className="text-muted-foreground">No logs yet.</span>
-                    ) : (
-                      selected.logs.map((line, i) => (
-                        <div key={`${line.ts}-${i}`} className="mb-1.5">
-                          <span className="text-muted-foreground">{line.ts.slice(11, 23)}</span>{' '}
-                          <span className={cn(
-                            line.level === 'error' && 'text-destructive',
-                            line.level === 'warn' && 'text-[var(--warning)]',
-                            line.level !== 'error' && line.level !== 'warn' && 'text-muted-foreground',
-                          )}>
-                            [{line.level}]
-                          </span>{' '}
-                          {line.message}
-                        </div>
-                      ))
-                    )}
-                  </ScrollArea>
-                </div>
-
-                <div className="flex min-h-0 flex-col">
-                  <PanelHeader>Test request body (JSON)</PanelHeader>
-                  <Textarea
-                    key={`tb-${selected.id}-${templates.length}`}
-                    ref={testBodyRef}
-                    defaultValue={defaultTestBodyJson}
-                    className="mx-3 mb-2 min-h-[140px] flex-1 resize-y font-mono text-[11px]"
-                  />
-                  <PanelHeader>Test response</PanelHeader>
-                  <pre className="mx-3 mb-3 flex-1 overflow-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-[11px] text-muted-foreground">
-                    {testResult || 'Run a test when status is running.'}
-                  </pre>
-                </div>
-              </div>
-
-              {selected.errorMessage && (
-                <p className="px-4 pb-3 text-xs text-destructive">{selected.errorMessage}</p>
-              )}
-            </div>
-          ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-              Select a sandbox above or spin up a new one.
-            </div>
-          )}
-        </section>
-      </div>
+      <DeployTemplateDialog
+        open={deployOpen}
+        onOpenChange={setDeployOpen}
+        templates={templates}
+        busyTemplateId={busy?.startsWith('up:') ? busy.slice(3) : null}
+        onDeploy={spinUp}
+      />
     </DashboardShell>
   )
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
-  return (
-    <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-      {children}
-    </p>
-  )
-}
-
-function PanelHeader({ children }: { children: ReactNode }) {
-  return (
-    <div className="border-b border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-      {children}
-    </div>
-  )
-}
-
-function StatusDot({ status }: { status: FaasContainer['status'] }) {
-  const color =
-    status === 'running' ? 'bg-[var(--success)]' :
-    status === 'failed' ? 'bg-destructive' :
-    status === 'stopped' ? 'bg-muted-foreground/40' :
-    'bg-[var(--running)]'
-
-  return (
-    <span
-      className={cn(
-        'size-2 shrink-0 rounded-full',
-        color,
-        (status === 'creating' || status === 'deploying' || status === 'stopping') &&
-          'animate-[pulse_1.2s_ease-in-out_infinite]',
-      )}
-    />
-  )
+function relativeTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  const diff = Date.now() - date.getTime()
+  if (diff < 60_000) return 'just now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
