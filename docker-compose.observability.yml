@@ -21,7 +21,24 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_USERS_DEFAULT_THEME: dark
+      GF_SERVER_ROOT_URL: https://n8n.maximalstudio.in/
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./observability/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - grafana
+
+volumes:
+  caddy_data:
+  caddy_config:

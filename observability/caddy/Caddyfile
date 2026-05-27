@@ -1,0 +1,7 @@
+{
+	email admin@maximalstudio.in
+}
+
+n8n.maximalstudio.in {
+	reverse_proxy grafana:3000
+}
