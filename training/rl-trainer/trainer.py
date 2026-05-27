@@ -49,6 +49,18 @@ session = requests.Session()
 session.headers["Content-Type"] = "application/json"
 
 
+def log_event(level: str, message: str) -> None:
+    log.log(getattr(logging, level.upper(), logging.INFO), message)
+    try:
+        session.post(
+            f"{CONTROL_PLANE_URL}/api/rl/runs/{RUN_ID}/events",
+            json={"component": "trainer", "level": level, "message": message},
+            timeout=3,
+        )
+    except Exception:
+        pass
+
+
 def report_metric(step: int, loss: float, mean_reward: float, gpu_util: int = 0):
     try:
         session.post(
@@ -99,6 +111,9 @@ def sample_buffer(batch_size: int) -> list:
 
 def wait_for_buffer(min_size: int):
     log.info("Waiting for buffer to reach %d trajectories...", min_size)
+    log_event("info", f"waiting for buffer >= {min_size}")
+    started = time.time()
+    last_log = 0.0
     while True:
         try:
             r = session.get(
@@ -107,27 +122,30 @@ def wait_for_buffer(min_size: int):
             )
             if r.ok:
                 size = r.json().get("size", 0)
-                log.info("Buffer size: %d / %d", size, min_size)
+                now = time.time()
+                if now-last_log >= 15:
+                    log.info("Buffer size: %d / %d (elapsed %.0fs)", size, min_size, now-started)
+                    log_event("info", f"buffer {size}/{min_size} elapsed={now-started:.0f}s")
+                    last_log = now
                 if size >= min_size:
+                    log_event("info", f"buffer ready size={size}")
                     return
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("buffer stats error: %s", e)
         time.sleep(5)
 
 
-def compute_grpo_loss(model, tokenizer, batch: list, device: str) -> tuple[torch.Tensor, float]:
+def compute_grpo_loss(model, tokenizer, batch: list, device: str):
     """
-    Simplified GRPO loss:
-      L = -mean[ clip(π/π_old, 1-ε, 1+ε) * A ]  + KL_COEF * KL(π || π_old)
-
-    We use reward - mean(reward_in_group) as the advantage (group relative).
-    Importance sampling ratio approximated as 1.0 for the first pass
-    (full off-policy IS requires storing log-probs at generation time).
+    Simplified GRPO loss. Returns (loss tensor or None, mean_reward).
+    Returns None loss when all rewards are identical (no gradient signal).
     """
     rewards = torch.tensor([t["reward"] for t in batch], dtype=torch.float32)
-    # Group relative advantage
-    advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+    mean_reward = rewards.mean().item()
+    if rewards.std() < 1e-8:
+        return None, mean_reward
 
+    advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
     total_loss = torch.tensor(0.0, requires_grad=True)
     for traj, adv in zip(batch, advantages):
         prompt = traj["prompt"]
@@ -135,13 +153,34 @@ def compute_grpo_loss(model, tokenizer, batch: list, device: str) -> tuple[torch
         text = prompt + code
         inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=1024).to(device)
         outputs = model(**inputs, labels=inputs["input_ids"])
-        # Policy gradient loss: -log_prob * advantage
         log_prob = -outputs.loss
+        if torch.isnan(log_prob):
+            continue
         total_loss = total_loss + (-log_prob * adv.item())
 
+    if not total_loss.requires_grad:
+        return None, mean_reward
     loss = total_loss / len(batch)
-    mean_reward = rewards.mean().item()
     return loss, mean_reward
+
+
+def notify_policy_reload(checkpoint_url: str) -> bool:
+    """Ask control plane to hot-reload policy server weights."""
+    if not checkpoint_url:
+        return False
+    try:
+        r = session.post(
+            f"{CONTROL_PLANE_URL}/api/rl/runs/{RUN_ID}/policy-reload",
+            json={"checkpoint_url": checkpoint_url},
+            timeout=120,
+        )
+        if r.ok:
+            log_event("info", f"policy reload OK: {checkpoint_url}")
+            return True
+        log_event("error", f"policy reload failed HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        log_event("error", f"policy reload request failed: {e}")
+    return False
 
 
 def get_gpu_util() -> int:
@@ -174,24 +213,13 @@ def upload_checkpoint(step: int, path: str) -> str:
 
 
 def reload_policy_server(checkpoint_url: str):
-    """Signal the policy server to hot-swap weights from the new checkpoint."""
-    if not POLICY_EXEC_ID or not checkpoint_url:
-        return
-    try:
-        # Get policy server URL from run details
-        r = session.get(f"{CONTROL_PLANE_URL}/api/rl/runs/{RUN_ID}", timeout=5)
-        if not r.ok:
-            return
-        policy_url = r.json().get("run", {}).get("policy_server_url", "")
-        if policy_url:
-            session.post(f"{policy_url}/reload", json={"checkpoint_url": checkpoint_url}, timeout=30)
-            log.info("Signaled policy server to reload weights from %s", checkpoint_url)
-    except Exception as e:
-        log.warning("Policy reload failed: %s", e)
+    """Delegate weight reload to control plane (orchestrates POST to policy /reload)."""
+    notify_policy_reload(checkpoint_url)
 
 
 def main():
     log.info("Trainer starting. run_id=%s model=%s", RUN_ID, BASE_MODEL)
+    log_event("info", f"trainer starting max_steps={MAX_STEPS} min_batch={MIN_BATCH_SIZE}")
     report_status("running")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -220,28 +248,42 @@ def main():
 
         optimizer.zero_grad()
         loss, mean_reward = compute_grpo_loss(model, tokenizer, batch, device)
+        if loss is None:
+            log.info("step=%d skipped — uniform rewards (mean=%.3f)", step, mean_reward)
+            log_event("info", f"step={step} skipped uniform rewards={mean_reward:.3f}")
+            continue
+
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
         gpu_util = get_gpu_util()
-        log.info("step=%d loss=%.4f mean_reward=%.3f gpu=%d%%", step, loss.item(), mean_reward, gpu_util)
-        report_metric(step, loss.item(), mean_reward, gpu_util)
+        loss_val = loss.item()
+        if torch.isnan(loss) or torch.isinf(loss):
+            log.warning("step=%d invalid loss, skipping metric", step)
+            continue
+        log.info("step=%d loss=%.4f mean_reward=%.3f gpu=%d%%", step, loss_val, mean_reward, gpu_util)
+        log_event("info", f"step={step} loss={loss_val:.4f} reward={mean_reward:.3f}")
+        report_metric(step, loss_val, mean_reward, gpu_util)
 
         if step % CHECKPOINT_EVERY == 0:
             with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
                 torch.save(model.state_dict(), f.name)
                 checkpoint_path = f.name
             checkpoint_url = upload_checkpoint(step, checkpoint_path)
-            reload_policy_server(checkpoint_url)
+            if checkpoint_url:
+                reload_policy_server(checkpoint_url)
             if mean_reward > best_reward:
                 best_reward = mean_reward
                 log.info("New best reward: %.3f at step %d", best_reward, step)
 
-    # Final checkpoint
+    # Final checkpoint + policy reload
     with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
         torch.save(model.state_dict(), f.name)
-        upload_checkpoint(MAX_STEPS, f.name)
+        final_path = f.name
+    final_url = upload_checkpoint(MAX_STEPS, final_path)
+    if final_url:
+        reload_policy_server(final_url)
 
     log.info("Training complete. best_reward=%.3f", best_reward)
     report_status("completed", output=f"best_reward={best_reward:.3f}")
