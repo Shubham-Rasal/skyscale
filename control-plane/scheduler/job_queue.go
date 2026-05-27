@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/bluequbit/faas/control-plane/observability"
 	"github.com/bluequbit/faas/control-plane/providers"
+	"github.com/bluequbit/faas/control-plane/rlevents"
 	"github.com/bluequbit/faas/control-plane/state"
 	"github.com/sirupsen/logrus"
 )
@@ -74,7 +77,8 @@ func (d *JobQueueDispatcher) processOne(ctx context.Context) {
 		}
 		return
 	}
-	d.logger.Infof("job_queue: dispatching job %s exec=%s gpu=%s", item.ID, item.ExecutionID, item.GPUModel)
+	d.logger.Infof("job_queue: dispatching job %s exec=%s gpu=%s image=%s priority=%d",
+		item.ID, item.ExecutionID, item.GPUModel, item.DockerImage, item.Priority)
 
 	env := map[string]string{}
 	if item.EnvVarsJSON != "" {
@@ -83,6 +87,32 @@ func (d *JobQueueDispatcher) processOne(ctx context.Context) {
 			env = map[string]string{}
 		}
 	}
+
+	runID := env["RUN_ID"]
+	role := env["SKYSCALE_ROLE"]
+	if role == "" {
+		if exec, err := d.sm.GetExecution(item.ExecutionID); err == nil {
+			role = exec.JobType
+		}
+	}
+	// Workers and trainer need the policy inference URL before they can make progress.
+	if runID != "" && role != "policy_server" {
+		run, err := d.sm.GetRLRun(runID)
+		if err == nil && run.PolicyServerURL == "" {
+			observability.RecordJobDeferred(role, item.GPUModel)
+			_ = d.sm.UpdateJobStatus(item.ID, "queued", "")
+			d.logger.Infof("job_queue: deferred %s — policy server URL not ready for run %s", item.ID, runID)
+			rlevents.Default.Record(runID, "queue", "info",
+				fmt.Sprintf("deferred %s until policy server URL is registered", role))
+			return
+		}
+	}
+	if runID != "" {
+		rlevents.Default.Record(runID, "queue", "info",
+			fmt.Sprintf("dispatching %s job=%s gpu=%s", role, item.ID, item.GPUModel))
+	}
+
+	started := time.Now()
 
 	spec := providers.DeploySpec{
 		DockerImage:     item.DockerImage,
@@ -110,7 +140,12 @@ func (d *JobQueueDispatcher) processOne(ctx context.Context) {
 		// Cold path: provision via registry with retries.
 		result, err = d.dispatchWithRetry(ctx, spec)
 		if err != nil {
-			d.logger.Errorf("job_queue: dispatch failed for %s: %v", item.ID, err)
+			observability.RecordJobDispatch(role, item.GPUModel, item.ProviderName, "failed", time.Since(started).Seconds())
+			d.logger.Errorf("job_queue: dispatch failed for %s after %s: %v", item.ID, time.Since(started).Round(time.Second), err)
+			if runID != "" {
+				rlevents.Default.Record(runID, "queue", "error",
+					fmt.Sprintf("%s dispatch failed: %v", role, err))
+			}
 			_ = d.sm.UpdateJobStatus(item.ID, "failed", err.Error())
 			d.markExecFailed(item.ExecutionID, err.Error())
 			return
@@ -136,8 +171,28 @@ func (d *JobQueueDispatcher) processOne(ctx context.Context) {
 	}
 	_ = d.sm.SaveVM(vm)
 
+	if strings.HasPrefix(result.ProviderAddr, "http") {
+		if exec, err := d.sm.GetExecution(item.ExecutionID); err == nil && exec.JobType == "policy_server" {
+			if run, err := d.sm.GetRLRun(exec.FunctionID); err == nil {
+				run.PolicyServerURL = result.ProviderAddr
+				run.UpdatedAt = time.Now()
+				_ = d.sm.SaveRLRun(run)
+				d.logger.Infof("job_queue: policy server URL set for run %s", exec.FunctionID)
+				rlevents.Default.Record(exec.FunctionID, "policy", "info",
+					"policy URL set via dispatch: "+result.ProviderAddr)
+			}
+		}
+	}
+
+	elapsed := time.Since(started).Round(time.Second)
+	observability.RecordJobDispatch(role, item.GPUModel, result.ProviderName, "success", elapsed.Seconds())
 	_ = d.sm.UpdateJobStatus(item.ID, "done", "")
-	d.logger.Infof("job_queue: job %s dispatched deployment=%s", item.ID, result.DeploymentID)
+	d.logger.Infof("job_queue: job %s dispatched provider=%s deployment=%s addr=%s elapsed=%s",
+		item.ID, result.ProviderName, result.DeploymentID, result.ProviderAddr, elapsed)
+	if runID != "" {
+		rlevents.Default.Record(runID, "queue", "info",
+			fmt.Sprintf("%s dispatched via %s in %s (deployment=%s)", role, result.ProviderName, elapsed, result.DeploymentID))
+	}
 }
 
 func (d *JobQueueDispatcher) dispatchWithRetry(ctx context.Context, spec providers.DeploySpec) (providers.DeployResult, error) {
@@ -156,6 +211,7 @@ func (d *JobQueueDispatcher) dispatchWithRetry(ctx context.Context, spec provide
 		if err == nil {
 			return result, nil
 		}
+		d.logger.Warnf("job_queue: provider attempt %d for %s failed: %v", attempt+1, spec.ExecutionID, err)
 		lastErr = err
 	}
 	return providers.DeployResult{}, fmt.Errorf("all retries exhausted: %w", lastErr)
