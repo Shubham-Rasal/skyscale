@@ -142,6 +142,15 @@ curl http://your-server:8080/api/rl/runs/rl-a3f91c2b
 open http://your-server:3000/rl-training
 ```
 
+For historical metrics and cross-run analysis, start the local Prometheus + Grafana stack:
+
+```bash
+docker compose -f docker-compose.observability.yml up -d
+open http://localhost:3001/d/skyscale-rl-training/skyscale-rl-training
+```
+
+Set `GRAFANA_BASE_URL=http://localhost:3001` and `GRAFANA_RL_DASHBOARD_UID=skyscale-rl-training` on the control plane to enable **Open in Grafana** links in the RL run detail panel. See [docs/observability.md](docs/observability.md) for full setup.
+
 ### 4. Stop when done
 
 ```bash
@@ -319,6 +328,9 @@ The rootfs is a custom Alpine Linux image (`scripts/build_daemon_rootfs.sh`) wit
 | `DB_PATH` | SQLite database path (default `skyscale.db`) |
 | `SKYSCALE_PUBLIC_BASE` | Public origin for deployment URLs |
 | `NEXT_PUBLIC_API_URL` | Control-plane URL for the dashboard |
+| `GRAFANA_BASE_URL` | Grafana base URL for per-run deep links |
+| `GRAFANA_RL_DASHBOARD_UID` | Grafana dashboard UID (default: `skyscale-rl-training`) |
+| `GRAFANA_ORG_ID` | Optional Grafana org ID for deep links |
 | `DATABASE_URL` | PostgreSQL connection string for auth |
 | `BETTER_AUTH_SECRET` | Better Auth signing secret |
 
