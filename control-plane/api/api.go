@@ -198,6 +198,10 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	rlRuns.HandleFunc("", h.rlStartRunHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}", h.rlGetRunHandler).Methods("GET")
 	rlRuns.HandleFunc("/{id}", h.rlStopRunHandler).Methods("DELETE")
+	rlRuns.HandleFunc("/{id}/policy-server", h.rlSetPolicyServerHandler).Methods("POST")
+	rlRuns.HandleFunc("/{id}/policy-reload", h.rlPolicyReloadHandler).Methods("POST")
+	rlRuns.HandleFunc("/{id}/events", h.rlGetEventsHandler).Methods("GET")
+	rlRuns.HandleFunc("/{id}/events", h.rlPostEventHandler).Methods("POST")
 }
 
 // RegisterSandboxAPIRoutes wires the sandbox API handler into the provided router
@@ -448,6 +452,12 @@ func (h *APIHandler) completeExecutionHandler(w http.ResponseWriter, r *http.Req
 	h.stateManager.SaveExecution(execution)
 
 	h.logger.Infof("Execution %s completed via callback: status=%s", id, status)
+	if execution.FunctionID != "" {
+		recordRLEvent(execution.FunctionID, execution.JobType, status, body.Output)
+		if body.Error != "" {
+			recordRLEvent(execution.FunctionID, execution.JobType, "error", body.Error)
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
