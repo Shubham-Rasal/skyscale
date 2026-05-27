@@ -21,6 +21,7 @@ Environment variables:
 import os
 import sys
 import time
+import re
 import requests
 import logging
 
@@ -41,9 +42,22 @@ DIFFICULTY = os.environ.get("DIFFICULTY", "")
 # Policy server URL — may be set directly or discovered from coordinator
 _POLICY_SERVER_URL = os.environ.get("POLICY_SERVER_URL", "")
 _POLICY_EXEC_ID = os.environ.get("POLICY_EXEC_ID", "")
+MODEL = os.environ.get("MODEL", "Qwen/Qwen3-0.6B")
 
 session = requests.Session()
 session.headers.update({"Content-Type": "application/json"})
+
+
+def log_event(level: str, message: str) -> None:
+    log.log(getattr(logging, level.upper(), logging.INFO), message)
+    try:
+        session.post(
+            f"{CONTROL_PLANE_URL}/api/rl/runs/{RUN_ID}/events",
+            json={"component": f"worker-{WORKER_INDEX}", "level": level, "message": message},
+            timeout=3,
+        )
+    except Exception:
+        pass
 
 
 def report_status(status: str, error: str = ""):
@@ -69,38 +83,98 @@ def get_policy_server_url() -> str:
             r = session.get(f"{CONTROL_PLANE_URL}/api/rl/runs/{RUN_ID}", timeout=5)
             if r.ok:
                 data = r.json()
-                url = data.get("run", {}).get("policy_server_url", "")
+                run = data.get("run", {})
+                url = run.get("PolicyServerURL") or run.get("policy_server_url", "")
                 if url:
+                    log_event("info", f"policy server discovered: {url}")
                     return url
-        except Exception:
-            pass
+        except Exception as e:
+            if attempt == 0 or attempt % 6 == 0:
+                log_event("warn", f"policy poll attempt {attempt+1}/60 failed: {e}")
         log.info("Waiting for policy server to be ready... (%d/60)", attempt + 1)
+        if attempt == 0 or attempt % 3 == 0:
+            log_event("info", f"waiting for policy URL ({attempt + 1}/60)...")
         time.sleep(10)
     raise RuntimeError("Policy server URL not available after 10 minutes")
 
 
+def extract_code(raw: str) -> str:
+    """Strip chain-of-thought and pull executable Python from model output."""
+    text = raw.strip()
+    think_open = "<" + "think" + ">"
+    think_close = "</" + "think" + ">"
+    for open_tag, close_tag in (
+        ("<think>", "</think>"),
+        (think_open, think_close),
+        ("<thinking>", "</thinking>"),
+    ):
+        lower = text.lower()
+        while open_tag in lower:
+            start = lower.find(open_tag)
+            end = lower.find(close_tag, start)
+            if end == -1:
+                text = text[:start]
+                break
+            text = text[:start] + text[end + len(close_tag):]
+            lower = text.lower()
+    fence = re.search(r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if fence:
+        return fence.group(1).strip()
+    fn = re.search(r"(^def \w+\(.*)", text, re.MULTILINE | re.DOTALL)
+    if fn:
+        return fn.group(1).strip()
+    return text.strip()
+
+
+def wait_for_policy_ready(policy_url: str, timeout: int = 60) -> None:
+    """Policy URL is only published after dispatch verifies inference; quick sanity check."""
+    try:
+        r = session.get(f"{policy_url.rstrip('/')}/health", timeout=15)
+        if r.status_code == 200:
+            log_event("info", "policy /health ok")
+            return
+    except Exception as e:
+        log_event("warn", f"policy health check: {e}")
+    raise RuntimeError(f"policy server not healthy after dispatch")
+
+
 def generate_code(policy_url: str, prompt: str) -> str:
-    """Call the vLLM OpenAI-compatible policy server to generate code."""
+    """Call vLLM OpenAI chat/completions (native policy server)."""
     system = (
         "You are an expert Python programmer. Write clean, correct Python code. "
-        "Output ONLY the function implementation, no explanations, no markdown."
+        "Do NOT use thinking tags. Output ONLY the function implementation — no markdown, no explanation."
     )
-    r = session.post(
-        f"{policy_url}/v1/chat/completions",
-        json={
-            "model": os.environ.get("MODEL", "Qwen/Qwen3-0.6B"),
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.8,
-            "max_tokens": 512,
-        },
-        timeout=60,
-    )
-    r.raise_for_status()
-    choices = r.json().get("choices", [])
-    return choices[0]["message"]["content"] if choices else ""
+    full_prompt = f"{system}\n\n{prompt}"
+    log_event("info", f"calling policy url={policy_url[:60]}...")
+    t0 = time.time()
+
+    last_err = None
+    for attempt in range(5):
+        try:
+            r = session.post(
+                f"{policy_url.rstrip('/')}/v1/chat/completions",
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": full_prompt}],
+                    "temperature": 0.8,
+                    "max_tokens": 512,
+                },
+                timeout=180,
+            )
+            r.raise_for_status()
+            raw = r.json()["choices"][0]["message"]["content"]
+            log_event("info", f"chat/completions ok in {time.time()-t0:.1f}s chars={len(raw)} attempt={attempt+1}")
+            return extract_code(raw)
+        except Exception as e:
+            last_err = e
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 503:
+                log_event("warn", f"chat/completions attempt {attempt+1}/5 model loading (503)")
+                time.sleep(10)
+                continue
+            log_event("warn", f"chat/completions attempt {attempt+1}/5 failed: {e}")
+            time.sleep(15 * (attempt + 1))
+    raise RuntimeError(f"policy inference failed after retries: {last_err}")
 
 
 def env_reset() -> dict:
@@ -149,11 +223,13 @@ def buffer_push(problem_id: str, prompt: str, code: str, reward: float, done: bo
 
 
 def main():
-    log.info("Worker %d starting. run_id=%s", WORKER_INDEX, RUN_ID)
+    log.info("Worker %d starting. run_id=%s cp=%s", WORKER_INDEX, RUN_ID, CONTROL_PLANE_URL)
+    log_event("info", f"worker {WORKER_INDEX} starting max_steps={MAX_STEPS}")
     report_status("running")
 
     policy_url = get_policy_server_url()
     log.info("Policy server: %s", policy_url)
+    wait_for_policy_ready(policy_url)
 
     step = 0
     errors = 0
@@ -167,6 +243,7 @@ def main():
             problem_id = episode["problem_id"]
             prompt = episode["prompt"]
             test_cases = episode.get("test_cases", [])
+            log_event("info", f"step={step} env_reset problem={problem_id} sandbox={sandbox_id}")
 
             # 2. Generate code from policy
             code = generate_code(policy_url, prompt)
@@ -182,11 +259,13 @@ def main():
 
             log.info("step=%d problem=%s reward=%.3f passed=%d/%d",
                      step, problem_id, reward, passed, total)
+            log_event("info", f"step={step} pushed reward={reward:.3f} passed={passed}/{total}")
             step += 1
             errors = 0
 
         except Exception as e:
             log.warning("step=%d error: %s", step, e)
+            log_event("error", f"step={step} failed: {e}")
             errors += 1
             if errors > 10:
                 log.error("Too many consecutive errors, stopping worker")
