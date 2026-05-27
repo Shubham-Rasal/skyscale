@@ -110,6 +110,9 @@ export const api = {
   getRLRun: (id: string): Promise<RLRunDetail> =>
     fetch(`/api/rl/runs/${encodeURIComponent(id)}`).then(parseResponse) as Promise<RLRunDetail>,
 
+  getRLEvents: (id: string, limit = 100): Promise<{ run_id: string; events: RLEvent[] }> =>
+    fetch(`/api/rl/runs/${encodeURIComponent(id)}/events?limit=${limit}`).then(parseResponse) as Promise<{ run_id: string; events: RLEvent[] }>,
+
   stopRLRun: (id: string): Promise<void> =>
     fetch(`/api/rl/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(() => undefined),
 
@@ -139,6 +142,18 @@ export interface RLRunDetail {
   worker_statuses: Array<{ id: string; status: string }>
   buffer_size: number
   metrics: Array<{ step: number; episode_reward: number; loss: number; gpu_util: number; timestamp: number }>
+  stage?: string
+  policy_status?: string
+  event_count?: number
+  grafana_url?: string
+}
+
+export interface RLEvent {
+  timestamp: string
+  run_id: string
+  component: string
+  level: string
+  message: string
 }
 
 export interface RLProblem {
