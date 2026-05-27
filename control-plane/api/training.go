@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bluequbit/faas/control-plane/observability"
 	"github.com/bluequbit/faas/control-plane/state"
 	"github.com/gorilla/mux"
 )
@@ -94,6 +95,11 @@ func (h *APIHandler) trainingMetricsHandler(w http.ResponseWriter, r *http.Reque
 	if err := h.stateManager.SaveMetric(rec); err != nil {
 		h.logger.Warnf("trainingMetrics: db write: %v", err)
 	}
+	observability.RecordTrainingMetric(m.JobID, m.Step, m.Loss, m.EpisodeReward, m.GPUUtil)
+	h.logger.Infof("trainingMetrics: job=%s step=%d loss=%.4f reward=%.3f gpu=%d",
+		m.JobID, m.Step, m.Loss, m.EpisodeReward, m.GPUUtil)
+	recordRLEvent(m.JobID, "trainer", "info",
+		fmt.Sprintf("step=%d loss=%.4f reward=%.3f", m.Step, m.Loss, m.EpisodeReward))
 	w.WriteHeader(http.StatusAccepted)
 }
 

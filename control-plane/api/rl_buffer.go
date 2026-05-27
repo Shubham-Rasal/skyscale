@@ -2,8 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
+	"github.com/bluequbit/faas/control-plane/observability"
 	"github.com/bluequbit/faas/control-plane/state"
 )
 
@@ -42,6 +44,12 @@ func (h *APIHandler) rlBufferPushHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "failed to save trajectory", http.StatusInternalServerError)
 		return
 	}
+	bufSize, _ := h.stateManager.BufferSize(body.RunID)
+	observability.RecordBufferPush(body.RunID, bufSize)
+	h.logger.Infof("rlBufferPush: run=%s step=%d problem=%s reward=%.3f buffer=%d",
+		body.RunID, body.StepN, body.ProblemID, body.Reward, bufSize)
+	recordRLEvent(body.RunID, "buffer", "info",
+		fmt.Sprintf("trajectory pushed step=%d reward=%.3f buffer=%d", body.StepN, body.Reward, bufSize))
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -70,6 +78,10 @@ func (h *APIHandler) rlBufferSampleHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "failed to sample trajectories", http.StatusInternalServerError)
 		return
 	}
+	observability.RecordBufferSample(body.RunID, len(rows))
+	h.logger.Infof("rlBufferSample: run=%s requested=%d returned=%d", body.RunID, body.BatchSize, len(rows))
+	recordRLEvent(body.RunID, "buffer", "info",
+		fmt.Sprintf("trainer sampled %d/%d trajectories", len(rows), body.BatchSize))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -91,6 +103,8 @@ func (h *APIHandler) rlBufferStatsHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "failed to count buffer", http.StatusInternalServerError)
 		return
 	}
+	observability.RecordBufferSize(runID, count)
+	h.logger.Debugf("rlBufferStats: run=%s size=%d", runID, count)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "size": count})
 }

@@ -108,9 +108,15 @@ func (h *APIHandler) rlEnvResetHandler(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.sandboxManager.CreateSandbox("python3", 1800)
 	if err != nil {
 		h.logger.Errorf("rlEnvReset: create sandbox: %v", err)
+		recordRLEvent(body.RunID, "env", "error", "sandbox create failed: "+err.Error())
 		http.Error(w, "failed to create sandbox: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	h.logger.Infof("rlEnvReset: run=%s problem=%s sandbox=%s difficulty=%s",
+		body.RunID, problem.ID, sb.ID, body.Difficulty)
+	recordRLEvent(body.RunID, "env", "info",
+		fmt.Sprintf("reset problem=%s sandbox=%s", problem.ID, sb.ID))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -154,6 +160,9 @@ func (h *APIHandler) rlEnvStepHandler(w http.ResponseWriter, r *http.Request) {
 		lengthPenalty = float64(len(body.Code)-500) * 0.0001
 	}
 	reward = max(0, reward-lengthPenalty)
+
+	h.logger.Infof("rlEnvStep: sandbox=%s passed=%d/%d reward=%.3f exit=%d",
+		body.SandboxID, passed, total, reward, exitCode)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
