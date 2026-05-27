@@ -45,7 +45,7 @@ func (h *APIHandler) rlBufferPushHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	bufSize, _ := h.stateManager.BufferSize(body.RunID)
-	observability.RecordBufferPush(body.RunID, bufSize)
+	observability.RecordBufferPush(body.RunID, int(bufSize))
 	h.logger.Infof("rlBufferPush: run=%s step=%d problem=%s reward=%.3f buffer=%d",
 		body.RunID, body.StepN, body.ProblemID, body.Reward, bufSize)
 	recordRLEvent(body.RunID, "buffer", "info",
@@ -103,7 +103,7 @@ func (h *APIHandler) rlBufferStatsHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "failed to count buffer", http.StatusInternalServerError)
 		return
 	}
-	observability.RecordBufferSize(runID, count)
+	observability.RecordBufferSize(runID, int(count))
 	h.logger.Debugf("rlBufferStats: run=%s size=%d", runID, count)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "size": count})
