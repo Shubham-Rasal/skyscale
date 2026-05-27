@@ -63,6 +63,7 @@ const CSV_PROFILER_CODE = `import base64
 import csv
 import io
 import math
+import time
 
 NULLS = {"", "null", "none", "nan", "n/a", "na"}
 
@@ -79,6 +80,7 @@ def to_float(value):
         return None
 
 def handle(event, context):
+    time.sleep(3)
     csv_text = base64.b64decode(event.get("csv_b64", "")).decode("utf-8")
     reader = csv.DictReader(io.StringIO(csv_text))
     rows = list(reader)
