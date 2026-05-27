@@ -1,5 +1,11 @@
 export const runtime = "nodejs";
 
+import {
+  controlPlaneAuthHeaders,
+  isGpuSpendRequest,
+  requireSession,
+} from "@/lib/require-auth";
+
 const CONTROL_PLANE_URL =
   process.env.SKYSCALE_CONTROL_PLANE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
@@ -14,13 +20,22 @@ export async function POST(request: Request, context: RouteContext) {
 
   try {
     const body = await request.text();
+
+    if (isGpuSpendRequest(body)) {
+      const denied = await requireSession(
+        request,
+        "Sign in to launch GPU jobs.",
+      );
+      if (denied) return denied;
+    }
+
     const upstream = await fetch(
       `${CONTROL_PLANE_URL}/api/functions/name/${encodeURIComponent(name)}/invoke`,
       {
         method: "POST",
-        headers: {
+        headers: controlPlaneAuthHeaders({
           "Content-Type": request.headers.get("content-type") ?? "application/json",
-        },
+        }),
         body,
         cache: "no-store",
       },

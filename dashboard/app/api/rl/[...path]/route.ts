@@ -1,9 +1,14 @@
 /**
  * Catch-all proxy for /api/rl/* → control plane /api/rl/*
- * Forwards GET, POST, DELETE without auth for internal RL worker calls.
- * Dashboard calls (start/stop run) are proxied here too.
+ * GPU spend actions (start/stop RL runs) require a signed-in dashboard session.
  */
 export const runtime = 'nodejs'
+
+import {
+  controlPlaneAuthHeaders,
+  isRlRunSpendMethod,
+  requireSession,
+} from '@/lib/require-auth'
 
 const CONTROL_PLANE_URL =
   process.env.SKYSCALE_CONTROL_PLANE_URL ??
@@ -13,13 +18,18 @@ const CONTROL_PLANE_URL =
 async function proxy(request: Request, { params }: { params: Promise<{ path: string[] }> }) {
   const { path: segments } = await params
   const path = segments.join('/')
+
+  if (isRlRunSpendMethod(request.method, path)) {
+    const denied = await requireSession(
+      request,
+      'Sign in to start or stop GPU RL training runs.',
+    )
+    if (denied) return denied
+  }
+
   const url = new URL(request.url)
   const upstream = new URL(`${CONTROL_PLANE_URL}/api/rl/${path}`)
   upstream.search = url.search
-
-  const headers: Record<string, string> = {}
-  const ct = request.headers.get('content-type')
-  if (ct) headers['Content-Type'] = ct
 
   const body = ['GET', 'HEAD', 'DELETE'].includes(request.method)
     ? undefined
@@ -27,7 +37,11 @@ async function proxy(request: Request, { params }: { params: Promise<{ path: str
 
   const res = await fetch(upstream.toString(), {
     method: request.method,
-    headers,
+    headers: controlPlaneAuthHeaders(
+      request.headers.get('content-type')
+        ? { 'Content-Type': request.headers.get('content-type')! }
+        : undefined,
+    ),
     body,
     cache: 'no-store',
   })

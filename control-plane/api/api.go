@@ -117,6 +117,14 @@ func (h *APIHandler) StartBackgroundWorkers(ctx context.Context) {
 	h.jobDispatcher.Start(ctx)
 }
 
+func (h *APIHandler) withSpendAuth(handler http.HandlerFunc) http.Handler {
+	return h.authManager.SpendAuthMiddleware(http.HandlerFunc(handler))
+}
+
+func (h *APIHandler) withSpendAuthIfGPU(handler http.HandlerFunc) http.Handler {
+	return h.authManager.SpendAuthIfGPUMiddleware(http.HandlerFunc(handler))
+}
+
 // RegisterRoutes registers API routes
 func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	// API routes
@@ -140,9 +148,9 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	functions.HandleFunc("/{id}", h.getFunctionHandler).Methods("GET")
 	functions.HandleFunc("/{id}", h.updateFunctionHandler).Methods("PUT")
 	functions.HandleFunc("/{id}", h.deleteFunctionHandler).Methods("DELETE")
-	functions.HandleFunc("/{id}/invoke", h.invokeFunctionHandler).Methods("POST")
+	functions.Handle("/{id}/invoke", h.withSpendAuthIfGPU(h.invokeFunctionHandler)).Methods("POST")
 	functions.HandleFunc("/name/{name}", h.getFunctionByNameHandler).Methods("GET")
-	functions.HandleFunc("/name/{name}/invoke", h.invokeFunctionByNameHandler).Methods("POST")
+	functions.Handle("/name/{name}/invoke", h.withSpendAuthIfGPU(h.invokeFunctionByNameHandler)).Methods("POST")
 	// functions.HandleFunc("/test/invoke", h.invokeTestFunctionHandler).Methods("POST")
 
 	// Execution routes
@@ -159,8 +167,8 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	api.HandleFunc("/training/metrics", h.TrainingMetricsHandler).Methods("POST")
 	api.HandleFunc("/training/metrics/{job_id}", h.trainingMetricsGetHandler).Methods("GET")
 
-	// Submit a training job directly to Akash from the dashboard
-	api.HandleFunc("/training/jobs", h.submitTrainingJobHandler).Methods("POST")
+	// Submit a training job from the dashboard (sign-in gated when SKYSCALE_DASHBOARD_TOKEN is set)
+	api.Handle("/training/jobs", h.withSpendAuth(h.submitTrainingJobHandler)).Methods("POST")
 
 	// Training job seeding (used by akash-test and scheduler to register jobs)
 	api.HandleFunc("/training/executions", h.seedExecutionHandler).Methods("POST")
@@ -193,11 +201,12 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	rlBuf.HandleFunc("/stats", h.rlBufferStatsHandler).Methods("GET")
 
 	// RL run coordinator routes (dashboard)
+	api.Handle("/rl/runs", h.withSpendAuth(h.rlStartRunHandler)).Methods("POST")
+	api.Handle("/rl/runs/{id}", h.withSpendAuth(h.rlStopRunHandler)).Methods("DELETE")
+
 	rlRuns := api.PathPrefix("/rl/runs").Subrouter()
 	rlRuns.HandleFunc("", h.rlListRunsHandler).Methods("GET")
-	rlRuns.HandleFunc("", h.rlStartRunHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}", h.rlGetRunHandler).Methods("GET")
-	rlRuns.HandleFunc("/{id}", h.rlStopRunHandler).Methods("DELETE")
 	rlRuns.HandleFunc("/{id}/policy-server", h.rlSetPolicyServerHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}/policy-reload", h.rlPolicyReloadHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}/events", h.rlGetEventsHandler).Methods("GET")

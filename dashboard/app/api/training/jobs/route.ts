@@ -1,4 +1,7 @@
-import { auth } from "@/lib/auth";
+import {
+  controlPlaneAuthHeaders,
+  requireSession,
+} from "@/lib/require-auth";
 
 export const runtime = "nodejs";
 
@@ -8,23 +11,18 @@ const CONTROL_PLANE_URL =
   "http://localhost:8080";
 
 export async function POST(request: Request) {
-  const session = await auth.api.getSession({
-    headers: request.headers,
-  });
-
-  if (!session) {
-    return Response.json(
-      { error: "Sign in to launch GPU training jobs." },
-      { status: 401 },
-    );
-  }
+  const denied = await requireSession(
+    request,
+    "Sign in to launch GPU training jobs.",
+  );
+  if (denied) return denied;
 
   const body = await request.text();
   const upstream = await fetch(`${CONTROL_PLANE_URL}/api/training/jobs`, {
     method: "POST",
-    headers: {
+    headers: controlPlaneAuthHeaders({
       "Content-Type": request.headers.get("content-type") ?? "application/json",
-    },
+    }),
     body,
     cache: "no-store",
   });

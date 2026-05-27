@@ -327,6 +327,7 @@ The rootfs is a custom Alpine Linux image (`scripts/build_daemon_rootfs.sh`) wit
 | `FAAS_VM_CPU_COUNT` | vCPUs per VM (default `1`) |
 | `DB_PATH` | SQLite database path (default `skyscale.db`) |
 | `SKYSCALE_PUBLIC_BASE` | Public origin for deployment URLs |
+| `SKYSCALE_DASHBOARD_TOKEN` | Shared secret for sign-in-gated GPU spend routes (set on control plane and dashboard) |
 | `NEXT_PUBLIC_API_URL` | Control-plane URL for the dashboard |
 | `GRAFANA_BASE_URL` | Grafana base URL for per-run deep links |
 | `GRAFANA_RL_DASHBOARD_UID` | Grafana dashboard UID (default: `skyscale-rl-training`) |

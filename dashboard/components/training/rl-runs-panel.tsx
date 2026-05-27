@@ -1,8 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Plus } from 'lucide-react'
 import { api } from '@/lib/api'
+import { authClient } from '@/lib/auth-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -43,8 +46,19 @@ const BASE_MODELS = [
 ]
 
 export function NewRlRunButton({ onClick }: { onClick: () => void }) {
+  const router = useRouter()
+  const { data: session, isPending } = authClient.useSession()
+
+  const handleClick = () => {
+    if (!session) {
+      router.push('/login')
+      return
+    }
+    onClick()
+  }
+
   return (
-    <Button size="sm" onClick={onClick}>
+    <Button size="sm" onClick={handleClick} disabled={isPending}>
       <Plus className="size-3.5" />
       New RL Run
     </Button>
@@ -52,11 +66,16 @@ export function NewRlRunButton({ onClick }: { onClick: () => void }) {
 }
 
 export function NewRunDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (runId: string) => void }) {
+  const { data: session, isPending } = authClient.useSession()
   const [form, setForm] = useState<NewRunForm>(defaultForm)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
   const submit = async () => {
+    if (!session) {
+      setError('Sign in to start GPU RL training runs.')
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -76,6 +95,15 @@ export function NewRunDialog({ open, onClose, onCreated }: { open: boolean; onCl
         </DialogHeader>
 
         <div className="space-y-4">
+          {!isPending && !session && (
+            <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              <Link href="/login" className="font-medium text-primary hover:underline">
+                Sign in
+              </Link>{' '}
+              to launch GPU RL training runs.
+            </p>
+          )}
+
           <div className="space-y-1.5">
             <Label>Base Model</Label>
             <Select value={form.base_model} onValueChange={v => setForm(f => ({ ...f, base_model: v }))}>
@@ -117,7 +145,7 @@ export function NewRunDialog({ open, onClose, onCreated }: { open: boolean; onCl
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={loading}>
+          <Button onClick={submit} disabled={loading || isPending || !session}>
             {loading ? 'Starting…' : 'Start Run'}
           </Button>
         </DialogFooter>

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,6 +16,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { api } from '@/lib/api'
+import { authClient } from '@/lib/auth-client'
 
 const TEMPLATES = [
   {
@@ -132,6 +134,7 @@ function isLocalCallbackURL(value: string) {
 }
 
 export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, initialTemplate }: Props) {
+  const { data: session, isPending } = authClient.useSession()
   const initIdx = templateIndex(initialTemplate)
   const [tplIdx, setTplIdx] = useState(initIdx)
   const [fields, setFields] = useState(TEMPLATES[initIdx].defaults)
@@ -158,6 +161,13 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
 
   async function submit() {
     setError('')
+    const isGpuJob =
+      fields.hardwareType === 'gpu' ||
+      fields.jobType === 'training_run'
+    if (isGpuJob && !session) {
+      setError('Sign in to launch GPU training jobs.')
+      return
+    }
     let input: Record<string, unknown> = {}
     try { input = JSON.parse(fields.input) } catch {
       setError('Input must be valid JSON')
@@ -299,11 +309,24 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
             />
           </div>
 
+          {fields.hardwareType === 'gpu' && !isPending && !session && (
+            <p className="text-sm text-muted-foreground">
+              <Link href="/login" className="font-medium text-primary hover:underline">
+                Sign in
+              </Link>{' '}
+              to launch GPU training jobs.
+            </p>
+          )}
+
           {error && (
             <p className="text-sm text-destructive">{error}</p>
           )}
 
-          <Button className="w-full" onClick={submit} disabled={submitting}>
+          <Button
+            className="w-full"
+            onClick={submit}
+            disabled={submitting || isPending || ((fields.hardwareType === 'gpu' || fields.jobType === 'training_run') && !session)}
+          >
             {submitting ? 'Submitting…' : 'Submit Run'}
           </Button>
         </div>
