@@ -145,6 +145,8 @@ type RLRun struct {
 	PolicyServerURL string
 	TrainerExecID   string
 	WorkerExecIDs   string // JSON array of execution IDs
+	ClosedLoop      bool    // serialized collect → train → redeploy cycles
+	TrainingRound   int     // current training round (incremented after each optimizer step)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
