@@ -1,17 +1,14 @@
 """
-Policy server: vLLM-backed inference endpoint for RL rollout workers.
+Policy server: vLLM-backed inference with /reload and OpenAI-compatible chat API.
 
-Environment variables:
-  MODEL_NAME         HuggingFace model ID (default: Qwen/Qwen2.5-Coder-1.5B-Instruct)
-  RUN_ID             RL run ID
-  CONTROL_PLANE_URL  Skyscale control plane URL
-  EXECUTION_ID       Execution ID to report status
-  PORT               HTTP port (default: 8000)
+Supports CHECKPOINT_URL to load fine-tuned weights at startup (closed-loop redeploy).
 """
 import os
 import sys
 import time
 import threading
+import tempfile
+import urllib.request
 import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -19,6 +16,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen3-0.6B")
+CHECKPOINT_URL = os.environ.get("CHECKPOINT_URL", "")
 RUN_ID = os.environ.get("RUN_ID", "local")
 CONTROL_PLANE_URL = os.environ.get("CONTROL_PLANE_URL", "http://localhost:8080")
 EXECUTION_ID = os.environ.get("EXECUTION_ID", RUN_ID)
@@ -30,15 +28,44 @@ _llm = None
 _llm_lock = threading.Lock()
 _llm_ready = False
 _llm_error: Optional[str] = None
+_loaded_model = MODEL_NAME
+
+
+def _download_checkpoint(url: str) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+        urllib.request.urlretrieve(url, f.name)
+        return f.name
+
+
+def _apply_checkpoint_to_hf(model_name: str, checkpoint_path: str) -> str:
+    """Merge HF state_dict checkpoint into a temp model dir for vLLM."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    tmp = tempfile.mkdtemp(prefix="skyscale-policy-")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+    state = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(state, strict=False)
+    model.save_pretrained(tmp)
+    tokenizer.save_pretrained(tmp)
+    return tmp
 
 
 def load_llm():
-    """Load vLLM synchronously before serving traffic."""
-    global _llm, _llm_ready, _llm_error
+    """Load vLLM synchronously after HTTP server is up."""
+    global _llm, _llm_ready, _llm_error, _loaded_model
     try:
-        print(f"[policy] loading model {MODEL_NAME}...", flush=True)
+        model_path = MODEL_NAME
+        if CHECKPOINT_URL:
+            print(f"[policy] downloading checkpoint {CHECKPOINT_URL}...", flush=True)
+            ckpt = _download_checkpoint(CHECKPOINT_URL)
+            print("[policy] merging checkpoint into base model...", flush=True)
+            model_path = _apply_checkpoint_to_hf(MODEL_NAME, ckpt)
+            _loaded_model = model_path
+        print(f"[policy] loading vLLM model {model_path}...", flush=True)
         from vllm import LLM
-        _llm = LLM(model=MODEL_NAME, dtype="float16", max_model_len=2048)
+        _llm = LLM(model=model_path, dtype="float16", max_model_len=2048)
         _llm_ready = True
         print("[policy] model loaded", flush=True)
     except Exception as e:
@@ -70,6 +97,43 @@ class ReloadRequest(BaseModel):
     checkpoint_url: str
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    model: str = MODEL_NAME
+    messages: List[ChatMessage]
+    temperature: float = 0.8
+    max_tokens: int = 512
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatRequest):
+    if not _llm_ready:
+        raise HTTPException(status_code=503, detail="model loading")
+    from vllm import SamplingParams
+
+    llm = get_llm()
+    parts = []
+    for m in req.messages:
+        parts.append(m.content)
+    prompt = "\n".join(parts)
+    params = SamplingParams(
+        temperature=req.temperature,
+        max_tokens=req.max_tokens,
+    )
+    outputs = llm.generate([prompt], params)
+    text = outputs[0].outputs[0].text
+    return {
+        "id": "skyscale-policy",
+        "object": "chat.completion",
+        "model": req.model or MODEL_NAME,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+    }
+
+
 @app.post("/generate", response_model=GenerateResponse)
 async def generate(req: GenerateRequest):
     if not _llm_ready:
@@ -89,16 +153,16 @@ async def generate(req: GenerateRequest):
 @app.post("/reload")
 async def reload_weights(req: ReloadRequest):
     """Hot-swap model weights from a checkpoint URL (artifact store)."""
-    import tempfile
-    import urllib.request
-
+    global _loaded_model
     try:
-        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
-            urllib.request.urlretrieve(req.checkpoint_url, f.name)
-            checkpoint_path = f.name
+        ckpt = _download_checkpoint(req.checkpoint_url)
+        model_path = _apply_checkpoint_to_hf(MODEL_NAME, ckpt)
         with _llm_lock:
-            llm = get_llm()
-            llm.load_weights(checkpoint_path)
+            from vllm import LLM
+            llm = LLM(model=model_path, dtype="float16", max_model_len=2048)
+            global _llm
+            _llm = llm
+            _loaded_model = model_path
         try:
             requests.post(
                 f"{CONTROL_PLANE_URL}/api/rl/runs/{RUN_ID}/events",
@@ -121,7 +185,7 @@ async def health():
     return {
         "ok": _llm_ready and _llm_error is None,
         "ready": _llm_ready,
-        "model": MODEL_NAME,
+        "model": _loaded_model,
         "run_id": RUN_ID,
         "error": _llm_error,
     }
@@ -131,7 +195,7 @@ async def health():
 async def ready():
     if not _llm_ready:
         raise HTTPException(status_code=503, detail=_llm_error or "model loading")
-    return {"ok": True, "model": MODEL_NAME}
+    return {"ok": True, "model": _loaded_model}
 
 
 def _report_status(status: str, error: str = ""):
@@ -150,13 +214,12 @@ def _report_status(status: str, error: str = ""):
 
 if __name__ == "__main__":
     _report_status("running")
-    # Bind HTTP immediately so Modal tunnel stays reachable while vLLM loads.
     server = threading.Thread(
         target=lambda: uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info"),
         daemon=True,
     )
     server.start()
-    for _ in range(30):
+    for _ in range(60):
         try:
             requests.get(f"http://127.0.0.1:{PORT}/health", timeout=1)
             break
