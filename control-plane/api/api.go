@@ -209,6 +209,8 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	rlRuns.HandleFunc("/{id}", h.rlGetRunHandler).Methods("GET")
 	rlRuns.HandleFunc("/{id}/policy-server", h.rlSetPolicyServerHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}/policy-reload", h.rlPolicyReloadHandler).Methods("POST")
+	rlRuns.HandleFunc("/{id}/policy-redeploy", h.rlPolicyRedeployHandler).Methods("POST")
+	rlRuns.HandleFunc("/{id}/collect", h.rlCollectHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}/events", h.rlGetEventsHandler).Methods("GET")
 	rlRuns.HandleFunc("/{id}/events", h.rlPostEventHandler).Methods("POST")
 }
