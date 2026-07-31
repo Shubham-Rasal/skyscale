@@ -32,6 +32,22 @@ func firstEnv(key, fallback string) string {
 	return fallback
 }
 
+func mustAtoi(s string) int {
+	var n int
+	fmt.Sscanf(s, "%d", &n)
+	if n <= 0 {
+		return 1
+	}
+	return n
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func appendHFToken(env map[string]string) {
 	if token := os.Getenv("HF_TOKEN"); token != "" {
 		env["HF_TOKEN"] = token
@@ -51,6 +67,7 @@ func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
 		MinBatchSize    int    `json:"min_batch_size"`
 		BatchSize       int    `json:"batch_size"`
 		WorkerMaxSteps  int    `json:"worker_max_steps"`
+		ClosedLoop      bool   `json:"closed_loop"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -82,6 +99,9 @@ func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
 	if body.WorkerMaxSteps > 0 {
 		workerMaxSteps = fmt.Sprintf("%d", body.WorkerMaxSteps)
 	}
+	if os.Getenv("RL_CLOSED_LOOP") == "1" {
+		body.ClosedLoop = true
+	}
 
 	runID := "rl-" + uuid.New().String()[:8]
 	now := time.Now()
@@ -92,6 +112,7 @@ func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
 		BaseModel:  body.BaseModel,
 		NumWorkers: body.NumWorkers,
 		GPUModel:   body.GPUModel,
+		ClosedLoop: body.ClosedLoop,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -152,6 +173,12 @@ func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
 		"CHECKPOINT_EVERY":  checkpointEvery,
 		"ENTRYPOINT":        "python /app/trainer.py",
 	}
+	if body.ClosedLoop {
+		trainerEnv["CLOSED_LOOP"] = "1"
+		trainerEnv["CHECKPOINT_EVERY"] = "1"
+		trainerEnv["NUM_WORKERS"] = fmt.Sprintf("%d", body.NumWorkers)
+		trainerEnv["TRAJECTORIES_PER_WORKER"] = fmt.Sprintf("%d", maxInt(1, (mustAtoi(minBatch)+body.NumWorkers-1)/maxInt(1, body.NumWorkers)))
+	}
 	appendHFToken(trainerEnv)
 	trainerEnvJSON, _ := json.Marshal(trainerEnv)
 	trainerJob := &state.JobQueueItem{
@@ -180,46 +207,49 @@ func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
 		h.logger.Errorf("rlStartRun: enqueue trainer: %v", err)
 	}
 
-	// Spawn N rollout worker jobs (CPU)
-	workerExecIDs := make([]string, body.NumWorkers)
-	for i := 0; i < body.NumWorkers; i++ {
-		workerExecID := fmt.Sprintf("exec-worker-%s-%d", runID, i)
-		workerExecIDs[i] = workerExecID
-		workerEnv := map[string]string{
-			"RUN_ID":            runID,
-			"WORKER_INDEX":      fmt.Sprintf("%d", i),
-			"CONTROL_PLANE_URL": body.ControlPlaneURL,
-			"EXECUTION_ID":      workerExecID,
-			"POLICY_EXEC_ID":    policyExecID,
-			"MODEL":             body.BaseModel,
-			"MAX_STEPS":         workerMaxSteps,
-			"DIFFICULTY":        "easy",
-			"ENTRYPOINT":        "python /app/worker.py",
-		}
-		workerEnvJSON, _ := json.Marshal(workerEnv)
-		workerJob := &state.JobQueueItem{
-			ID:              fmt.Sprintf("job-worker-%s-%d", runID, i),
-			ExecutionID:     workerExecID,
-			DockerImage:     "ghcr.io/skyscale/rl-worker:latest",
-			GPUModel:        "cpu",
-			EnvVarsJSON:     string(workerEnvJSON),
-			ControlPlaneURL: body.ControlPlaneURL,
-			Priority:        5,
-			Status:          "queued",
-			CreatedAt:       now,
-			UpdatedAt:       now,
-		}
-		workerExec := &state.Execution{
-			ID:           workerExecID,
-			FunctionID:   runID,
-			Status:       "queued",
-			StartTime:    now,
-			JobType:      "rl_rollout_worker",
-			HardwareType: "cpu",
-		}
-		h.stateManager.SaveExecution(workerExec)
-		if err := h.stateManager.EnqueueJob(workerJob); err != nil {
-			h.logger.Errorf("rlStartRun: enqueue worker %d: %v", i, err)
+	// Spawn N rollout worker jobs (CPU) — skipped in closed-loop mode (trainer triggers collect rounds)
+	workerExecIDs := make([]string, 0, body.NumWorkers)
+	if !body.ClosedLoop {
+		workerExecIDs = make([]string, body.NumWorkers)
+		for i := 0; i < body.NumWorkers; i++ {
+			workerExecID := fmt.Sprintf("exec-worker-%s-%d", runID, i)
+			workerExecIDs[i] = workerExecID
+			workerEnv := map[string]string{
+				"RUN_ID":            runID,
+				"WORKER_INDEX":      fmt.Sprintf("%d", i),
+				"CONTROL_PLANE_URL": body.ControlPlaneURL,
+				"EXECUTION_ID":      workerExecID,
+				"POLICY_EXEC_ID":    policyExecID,
+				"MODEL":             body.BaseModel,
+				"MAX_STEPS":         workerMaxSteps,
+				"DIFFICULTY":        "easy",
+				"ENTRYPOINT":        "python /app/worker.py",
+			}
+			workerEnvJSON, _ := json.Marshal(workerEnv)
+			workerJob := &state.JobQueueItem{
+				ID:              fmt.Sprintf("job-worker-%s-%d", runID, i),
+				ExecutionID:     workerExecID,
+				DockerImage:     "ghcr.io/skyscale/rl-worker:latest",
+				GPUModel:        "cpu",
+				EnvVarsJSON:     string(workerEnvJSON),
+				ControlPlaneURL: body.ControlPlaneURL,
+				Priority:        5,
+				Status:          "queued",
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			workerExec := &state.Execution{
+				ID:           workerExecID,
+				FunctionID:   runID,
+				Status:       "queued",
+				StartTime:    now,
+				JobType:      "rl_rollout_worker",
+				HardwareType: "cpu",
+			}
+			h.stateManager.SaveExecution(workerExec)
+			if err := h.stateManager.EnqueueJob(workerJob); err != nil {
+				h.logger.Errorf("rlStartRun: enqueue worker %d: %v", i, err)
+			}
 		}
 	}
 
@@ -234,9 +264,13 @@ func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
 	h.logger.Infof("Started RL run %s: %d workers, trainer=%s, policy=%s",
 		runID, body.NumWorkers, trainerExecID, policyExecID)
 	recordRLEvent(runID, "coordinator", "info",
-		fmt.Sprintf("run started model=%s workers=%d gpu=%s", body.BaseModel, body.NumWorkers, body.GPUModel))
-	recordRLEvent(runID, "coordinator", "info",
-		"dispatch order: policy server first (blocks ~3-5min on Modal), then workers+trainer")
+		fmt.Sprintf("run started model=%s workers=%d gpu=%s closed_loop=%v", body.BaseModel, body.NumWorkers, body.GPUModel, body.ClosedLoop))
+	if body.ClosedLoop {
+		recordRLEvent(runID, "coordinator", "info", "closed-loop mode: trainer orchestrates collect → train → policy redeploy")
+	} else {
+		recordRLEvent(runID, "coordinator", "info",
+			"dispatch order: policy server first (blocks ~3-5min on Modal), then workers+trainer")
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
