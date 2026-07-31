@@ -61,8 +61,8 @@ def wait_http(url: str, timeout: int = 180, interval: int = 3) -> bool:
     return False
 
 
-def wait_policy_ready(policy_url: str, timeout: int = 900, interval: int = 5) -> bool:
-    """Block until vLLM OpenAI server responds on /health."""
+def wait_policy_ready(policy_url: str, timeout: int = 900, interval: int = 5, native: bool = False) -> bool:
+    """Block until policy server is ready (/health for native vLLM, /ready for serve.py)."""
     deadline = time.time() + timeout
     attempt = 0
     while time.time() < deadline:
@@ -70,8 +70,18 @@ def wait_policy_ready(policy_url: str, timeout: int = 900, interval: int = 5) ->
         try:
             resp = requests.get(f"{policy_url.rstrip('/')}/health", timeout=15)
             if resp.status_code == 200:
-                log(f"policy /health ready after {attempt} attempts")
-                return True
+                if native:
+                    log(f"policy /health ready after {attempt} attempts")
+                    return True
+                data = resp.json()
+                if data.get("ready"):
+                    log(f"policy /health ready after {attempt} attempts")
+                    return True
+            if not native:
+                resp = requests.get(f"{policy_url.rstrip('/')}/ready", timeout=15)
+                if resp.status_code == 200:
+                    log(f"policy /ready after {attempt} attempts")
+                    return True
         except Exception as e:
             if attempt == 1 or attempt % 12 == 0:
                 log(f"policy ready wait attempt={attempt} err={e}")
@@ -126,7 +136,7 @@ def build_image(docker_image: str):
         if policy_dir.exists():
             return (
                 modal.Image.from_registry("vllm/vllm-openai:latest", add_python="3.11")
-                .pip_install("fastapi", "uvicorn", "requests")
+                .pip_install("fastapi", "uvicorn", "requests", "transformers", "accelerate")
                 .add_local_dir(str(policy_dir), "/app", copy=True)
             )
     return modal.Image.from_registry(docker_image)
@@ -195,20 +205,26 @@ def main():
 
     if is_policy_server(params):
         create_kwargs["encrypted_ports"] = [8000]
-        create_kwargs["memory"] = 24576
         model = env_vars.get("MODEL_NAME", "Qwen/Qwen3-0.6B")
-        vllm_image = modal.Image.from_registry("vllm/vllm-openai:latest", add_python="3.11")
-        create_kwargs["image"] = vllm_image
-        log(f"policy: launching native vllm serve for {model}")
-        sb = modal.Sandbox.create(
-            model,
-            "--dtype", "float16",
-            "--max-model-len", "2048",
-            "--gpu-memory-utilization", "0.85",
-            "--port", "8000",
-            "--host", "0.0.0.0",
-            **create_kwargs,
-        )
+        checkpoint_url = env_vars.get("CHECKPOINT_URL", "")
+        if checkpoint_url:
+            create_kwargs["memory"] = 24576
+            log(f"policy: launching serve.py with checkpoint (closed-loop redeploy)")
+            sb = modal.Sandbox.create("sh", "-c", "exec python /app/serve.py", **create_kwargs)
+        else:
+            create_kwargs["memory"] = 16384
+            policy_image = modal.Image.from_registry("vllm/vllm-openai:latest", add_python="3.11")
+            create_kwargs["image"] = policy_image
+            log(f"policy: launching native vLLM serve for {model}")
+            sb = modal.Sandbox.create(
+                model,
+                "--dtype", "float16",
+                "--max-model-len", "2048",
+                "--gpu-memory-utilization", "0.85",
+                "--port", "8000",
+                "--host", "0.0.0.0",
+                **create_kwargs,
+            )
     elif cmd:
         sb = modal.Sandbox.create(*cmd, **create_kwargs)
     else:
@@ -233,7 +249,8 @@ def main():
             log(f"policy tunnel={policy_url} — waiting for vLLM /health")
 
             model = env_vars.get("MODEL_NAME", "Qwen/Qwen3-0.6B")
-            if not wait_policy_ready(policy_url, timeout=900):
+            use_native = not bool(env_vars.get("CHECKPOINT_URL"))
+            if not wait_policy_ready(policy_url, timeout=900, native=use_native):
                 result["policy_warning"] = "vLLM did not become ready in time"
                 log(f"policy vLLM ready timeout run={run_id}")
             elif not verify_generate(policy_url, model, timeout=180):
