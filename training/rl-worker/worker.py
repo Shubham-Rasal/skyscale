@@ -233,10 +233,13 @@ def main():
 
     step = 0
     errors = 0
+    refresh_policy = os.environ.get("REFRESH_POLICY_URL", "0") == "1"
 
     while MAX_STEPS == 0 or step < MAX_STEPS:
         sandbox_id = None
         try:
+            if refresh_policy:
+                policy_url = get_policy_server_url()
             # 1. Get a problem
             episode = env_reset()
             sandbox_id = episode["sandbox_id"]
