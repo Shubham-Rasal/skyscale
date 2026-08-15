@@ -7,24 +7,8 @@ set -euo pipefail
 : "${SKYSCALE_CONTROL_PLANE_URL:?required}"
 : "${SKYSCALE_RUN_ID:?required}"
 
-# Must match upstream slime scripts/models/qwen3-0.6B.sh and prepare_model.py.
-QWEN3_06B_MODEL_ARGS=(
-  --swiglu
-  --num-layers 28
-  --hidden-size 1024
-  --ffn-hidden-size 3072
-  --num-attention-heads 16
-  --group-query-attention
-  --num-query-groups 8
-  --use-rotary-position-embeddings
-  --disable-bias-linear
-  --normalization RMSNorm
-  --norm-epsilon 1e-6
-  --rotary-base 1000000
-  --vocab-size 151936
-  --kv-channels 128
-  --qk-layernorm
-)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/qwen3_0_6b_model_args.sh"
 
 exec python train.py \
   "${QWEN3_06B_MODEL_ARGS[@]}" \
@@ -41,11 +25,12 @@ exec python train.py \
   --rollout-batch-size 1 \
   --n-samples-per-prompt 2 \
   --global-batch-size 2 \
-  --max-response-len 256 \
+  --rollout-max-response-len 256 \
   --sglang-mem-fraction-static 0.35 \
   --tensor-model-parallel-size 1 \
   --pipeline-model-parallel-size 1 \
   --context-parallel-size 1 \
-  --custom-generate-function-path skyscale.adapters.SkyScaleDataSource \
-  --custom-rm-path skyscale.adapters.sandbox_reward \
+  --custom-generate-function-path skyscale.adapters.generate_from_skyscale \
+  --custom-rm-path skyscale.adapters.async_sandbox_reward \
+  --rollout-all-samples-process-path skyscale.adapters.publish_rollout_samples \
   "$@"

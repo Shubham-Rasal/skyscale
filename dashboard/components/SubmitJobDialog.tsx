@@ -239,7 +239,7 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label>Job Type</Label>
               <Select value={fields.jobType} onValueChange={v => set('jobType', v)}>
@@ -264,7 +264,7 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
           </div>
 
           {fields.hardwareType === 'gpu' && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>Provider</Label>
                 <Select value={fields.provider} onValueChange={setProvider}>
@@ -286,7 +286,7 @@ export function SubmitJobDialog({ open, onOpenChange, onSubmitted, trigger, init
                   </SelectContent>
                 </Select>
               </div>
-              <div className="col-span-2 space-y-1.5">
+              <div className="space-y-1.5 sm:col-span-2">
                 <Label htmlFor="dockerImage">Docker Image</Label>
                 <Input
                   id="dockerImage"

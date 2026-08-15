@@ -28,19 +28,19 @@ export default function FaasPage() {
   const [deployOpen, setDeployOpen] = useState(false)
   const [query, setQuery] = useState('')
 
+  const sortedContainers = useMemo(
+    () => [...containers].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [containers],
+  )
+
   const selected = useMemo(
-    () => containers.find((c) => c.id === selectedId) ?? null,
-    [containers, selectedId],
+    () => containers.find((c) => c.id === selectedId) ?? sortedContainers[0] ?? null,
+    [containers, selectedId, sortedContainers],
   )
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selected?.templateId),
     [templates, selected?.templateId],
-  )
-
-  const sortedContainers = useMemo(
-    () => [...containers].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
-    [containers],
   )
 
   const filteredContainers = useMemo(() => {
@@ -90,15 +90,6 @@ export default function FaasPage() {
     })()
     return () => { cancelled = true }
   }, [])
-
-  useEffect(() => {
-    if (selectedId && containers.some((c) => c.id === selectedId)) return
-    if (sortedContainers.length > 0) {
-      setSelectedId(sortedContainers[0].id)
-    } else {
-      setSelectedId(null)
-    }
-  }, [containers, selectedId, sortedContainers])
 
   useEffect(() => {
     const needsPoll = containers.some(
@@ -184,13 +175,13 @@ export default function FaasPage() {
       />
 
       {error && (
-        <div className="mx-6 mt-4 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="mx-4 mt-4 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:mx-6">
           {error}
         </div>
       )}
 
       {containers.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center px-6 py-10">
+        <div className="flex flex-1 flex-col items-center justify-center px-4 py-10 sm:px-6">
           <EmptyState
             icon={<Box className="size-5" />}
             title="No sandboxes deployed"
@@ -214,8 +205,8 @@ export default function FaasPage() {
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <aside className="flex w-72 shrink-0 flex-col border-r border-border bg-muted/10">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+          <aside className="flex max-h-72 w-full shrink-0 flex-col border-b border-border bg-muted/10 lg:max-h-none lg:w-72 lg:border-b-0 lg:border-r">
             <div className="space-y-3 border-b border-border p-4">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -273,7 +264,7 @@ export default function FaasPage() {
             </ScrollArea>
           </aside>
 
-          <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
+          <section className="flex min-h-[36rem] min-w-0 flex-1 flex-col overflow-hidden bg-background lg:min-h-0">
             {selected ? (
               <ContainerDetail
                 key={selected.id}

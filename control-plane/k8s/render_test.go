@@ -43,8 +43,11 @@ func TestRenderColocatedRayJobUsesWholeGPU(t *testing.T) {
 func TestDisaggregatedTrainerRegistersExternalEngine(t *testing.T) {
 	job := RenderRayJob(renderSpec("disaggregated"), "attempt-1")
 	entrypoint, _, _ := unstructured.NestedString(job.Object, "spec", "entrypoint")
-	if !strings.Contains(entrypoint, "--rollout-external-engine-addrs") || !strings.Contains(entrypoint, "run-a-rollout") {
+	if !strings.Contains(entrypoint, "ROLLOUT_EXTERNAL_ENGINE_ADDRS=") || !strings.Contains(entrypoint, "run-a-rollout") {
 		t.Fatalf("missing external engine registration: %s", entrypoint)
+	}
+	if !strings.Contains(entrypoint, "disaggregated_qwen3_0_6b.sh") {
+		t.Fatalf("trainer does not use the validated disaggregated profile: %s", entrypoint)
 	}
 	deployment := RenderRolloutDeployment(renderSpec("disaggregated"), "policy-7")
 	if deployment.GetKind() != "Deployment" {
@@ -64,10 +67,42 @@ func TestAsyncAndRecoveryEntrypoint(t *testing.T) {
 	spec.Checkpoint.ResumeFrom = "s3://checkpoints/run/step-7"
 	job := RenderRayJob(spec, "attempt-2")
 	entrypoint, _, _ := unstructured.NestedString(job.Object, "spec", "entrypoint")
-	for _, expected := range []string{"train_async.py", "--load", "s3://checkpoints/run/step-7"} {
+	for _, expected := range []string{"async_qwen3_0_6b.sh", "--load", "s3://checkpoints/run/step-7"} {
 		if !strings.Contains(entrypoint, expected) {
 			t.Fatalf("entrypoint missing %q: %s", expected, entrypoint)
 		}
+	}
+}
+
+func TestRuntimePodsMountPreparedModelArtifacts(t *testing.T) {
+	spec := renderSpec("disaggregated")
+	job := RenderRayJob(spec, "attempt-1")
+	raw := job.Object["spec"].(map[string]any)["rayClusterSpec"].(map[string]any)["workerGroupSpecs"].([]any)[0].(map[string]any)
+	podSpec := raw["template"].(map[string]any)["spec"].(map[string]any)
+	volumes := podSpec["volumes"].([]any)
+	foundModelVolume := false
+	for _, volume := range volumes {
+		volumeObject := volume.(map[string]any)
+		if claim, ok := volumeObject["persistentVolumeClaim"].(map[string]any); ok {
+			if claim["claimName"] != "qwen3-0-6b-models" {
+				t.Fatalf("unexpected model claim: %#v", claim)
+			}
+			foundModelVolume = true
+		}
+	}
+	if !foundModelVolume {
+		t.Fatalf("model PVC volume is missing: %#v", volumes)
+	}
+	head := job.Object["spec"].(map[string]any)["rayClusterSpec"].(map[string]any)["headGroupSpec"].(map[string]any)
+	headContainers := head["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)
+	if len(headContainers) != 2 || headContainers[1].(map[string]any)["name"] != "skyscale-reporter" {
+		t.Fatalf("checkpoint reporter is not attached to the Ray head: %#v", headContainers)
+	}
+	deployment := RenderRolloutDeployment(spec, "policy-7")
+	deploymentSpec := deployment.Object["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	args := deploymentSpec["containers"].([]any)[0].(map[string]any)["args"].([]any)
+	if !strings.Contains(strings.Join(anyStrings(args), " "), "/models/hf") {
+		t.Fatalf("rollout does not use prepared model artifacts: %v", args)
 	}
 }
 

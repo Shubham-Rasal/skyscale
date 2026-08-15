@@ -18,7 +18,11 @@ export function SkyscaleLogo({
   size?: number
 }) {
   return (
-    <Link href={href} className={cn('group flex items-center gap-2.5', className)}>
+    <Link
+      href={href}
+      aria-label={showLabel ? undefined : 'Skyscale home'}
+      className={cn('group flex items-center gap-2.5', className)}
+    >
       <LogoMark size={size} interactive={interactive} />
       {showLabel && (
         <div className="min-w-0">

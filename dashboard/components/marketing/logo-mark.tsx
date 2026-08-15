@@ -60,7 +60,6 @@ interface LogoMarkProps {
 export function LogoMark({ size = 32, className, interactive = true }: LogoMarkProps) {
   const [phase, setPhase] = useState<DotPhase>('idle')
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const hoveringRef = useRef(false)
 
   const litMap = useMemo(() => {
     const map = new Map<string, { accent: boolean }>()
@@ -93,20 +92,17 @@ export function LogoMark({ size = 32, className, interactive = true }: LogoMarkP
       setPhase('return')
       timerRef.current = setTimeout(() => {
         setPhase('idle')
-        if (hoveringRef.current) runScatterCycle()
       }, 1000)
     }, 400)
   }, [clearTimer])
 
   const handleEnter = () => {
     if (!interactive) return
-    hoveringRef.current = true
     if (phase === 'idle') runScatterCycle()
   }
 
   const handleLeave = () => {
     if (!interactive) return
-    hoveringRef.current = false
     clearTimer()
     setPhase('return')
     timerRef.current = setTimeout(() => setPhase('idle'), 1000)
@@ -118,7 +114,7 @@ export function LogoMark({ size = 32, className, interactive = true }: LogoMarkP
   return (
     <div
       className={cn(
-        'relative shrink-0 rounded-sm bg-black',
+        'relative shrink-0 rounded-[var(--radius-control)] bg-card shadow-[var(--shadow-button)]',
         interactive && 'cursor-pointer',
         className,
       )}
@@ -166,9 +162,9 @@ export function LogoMark({ size = 32, className, interactive = true }: LogoMarkP
                 'rounded-full',
                 lit
                   ? lit.accent
-                    ? 'bg-[var(--galaxy-magenta)] shadow-[0_0_4px_color-mix(in_srgb,var(--galaxy-magenta)_40%,transparent)]'
-                    : 'bg-[var(--galaxy-cyan)] shadow-[0_0_3px_color-mix(in_srgb,var(--galaxy-cyan)_35%,transparent)]'
-                  : 'bg-[oklch(0.18_0.02_260)]/80',
+                    ? 'bg-[var(--design-accent)] shadow-[0_0_4px_color-mix(in_srgb,var(--design-accent)_35%,transparent)]'
+                    : 'bg-foreground shadow-[0_0_3px_color-mix(in_srgb,var(--foreground)_20%,transparent)]'
+                  : 'bg-border/70',
               )}
               style={{
                 width: dotSize,

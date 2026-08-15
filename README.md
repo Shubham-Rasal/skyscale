@@ -2,7 +2,7 @@
 
 **Reinforcement Learning as a Service.** Post-train any LLM on any task using distributed async RL — without managing clusters, scheduling workers, or provisioning GPUs. One API call starts the whole pipeline.
 
-> **Currently supports:** distributed GRPO RL runs (`POST /api/rl/runs`) with Modal GPU sandboxes (vLLM policy server, CPU rollout workers, GRPO trainer), Firecracker microVMs as code-execution RL environments (`reset` / `step` / `close`), an async experience buffer, live metrics in the Next.js dashboard, and Prometheus + Grafana observability. Also: Firecracker sandboxes, Railway-backed container sandboxes, on-demand GPU job submission (Modal / Akash / HuggingFace), and sign-in-gated GPU spend when `SKYSCALE_DASHBOARD_TOKEN` is set.
+> **Currently supports:** first-class slime RL runs on KubeRay and the legacy distributed GRPO path on Modal. Slime runs use SGLang rollouts, Megatron training, sandbox rewards, grouped-sample persistence, checkpoint reporting, and immutable run contracts. The dashboard submits and monitors either backend through `POST /api/rl/runs`.
 >
 > **Not yet:** closed-loop policy weight hot-swap on Modal, multi-turn episodes, custom problem-set uploads, and permissionless workers. See [What's not built yet](#whats-not-built-yet).
 
@@ -199,8 +199,6 @@ The Next.js dashboard (`dashboard/`) is the primary operator UI:
 | **Training** | `/` | RL runs list, live reward/loss charts, run detail drawer (logs, metadata, events), start/stop runs |
 | **Templates** | `/templates` | Job templates for quick submission |
 | **Sandboxes** | `/faas` | Deploy and manage isolated container sandboxes (Railway-backed) |
-| **On-Demand GPUs** | `/gpus` | GPU inventory and job queue |
-| **Load Speed** | `/benchmarks` | FaaS cold-start and throughput benchmarks |
 
 RL run detail includes stage, policy URL, buffer size, worker/trainer status, in-app Recharts metrics, activity log streaming, and an optional Grafana link.
 
@@ -223,13 +221,15 @@ HF_TOKEN=<token> python3 scripts/modal_pipeline_test.py
 
 It runs through all four stages — policy server health, RL run creation, buffer fill from 2 workers, and 3 GRPO training steps — and prints a pass/fail report with final metrics.
 
-**Load testing sandboxes:**
+### Slime on KubeRay
+
+Set `SKYSCALE_RL_KUBERNETES=1`, configure the pinned runtime images and runtime token, prepare the model PVC, then choose **Slime on KubeRay** in the dashboard. The control plane snapshots the run contract, creates a RayJob and rollout services, records grouped samples and optimizer progress, and resumes retries from the latest checkpoint on the model PVC.
 
 ```bash
-k6 run perf/faas_load_test.js
+bash scripts/validation/validate_slime_local.sh
 ```
 
-Set `API_URL` to your control plane origin. See `perf/faas_load_test.js` for VUs and duration defaults.
+Production prerequisites and manifests are documented in [`docs/slime-kuberay-production.md`](docs/slime-kuberay-production.md). The numerical one-GPU validation path is `AWS_SLIME_E2E=1 bash scripts/validation/aws_slime_gpu.sh`.
 
 ---
 
@@ -406,6 +406,10 @@ This design focused on `skyscale deploy` / `skyscale invoke` with a warm VM pool
 | `HF_TOKEN` | HuggingFace token for model downloads |
 | `ARTIFACT_LOCAL_DIR` | Local checkpoint fallback when S3 is not configured |
 | `S3_ENDPOINT` / `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` | S3-compatible artifact store (optional) |
+| `SKYSCALE_RL_KUBERNETES` | Enable the slime KubeRay reconciler (`1`) |
+| `SKYSCALE_SLIME_IMAGE` / `SKYSCALE_SGLANG_IMAGE` | Immutable runtime image references |
+| `SKYSCALE_MODEL_PVC` / `SKYSCALE_MODEL_MOUNT_PATH` | Prepared Hugging Face and Megatron model artifact volume |
+| `SKYSCALE_RUNTIME_TOKEN` | Shared bearer token for slime runtime callbacks |
 | `FAAS_VM_KERNEL_PATH` | Firecracker kernel path (auto-downloaded if absent) |
 | `FAAS_VM_ROOTFS_PATH` | VM rootfs path (auto-downloaded if absent) |
 | `FAAS_VM_MEMORY_MB` | Memory per VM in MB (default `128`) |

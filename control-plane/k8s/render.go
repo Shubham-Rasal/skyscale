@@ -67,16 +67,18 @@ func image(spec contracts.RLRunSpec) string {
 
 func slimeArgs(spec contracts.RLRunSpec) []any {
 	args := []string{
-		"python", strategyEntrypoint(spec.Algorithm.Strategy),
-		"--model", spec.Model.Source,
-		"--tensor-model-parallel-size", strconv.Itoa(spec.Topology.Trainer.TP),
-		"--pipeline-model-parallel-size", strconv.Itoa(spec.Topology.Trainer.PP),
-		"--context-parallel-size", strconv.Itoa(spec.Topology.Trainer.CP),
+		"env", "MODEL_ROOT=" + modelMountPath(spec),
 	}
 	if spec.Topology.Mode == "disaggregated" {
 		address := fmt.Sprintf("%s-rollout.%s.svc.cluster.local:8000", spec.Metadata.RunID, NamespaceFor(spec.Metadata.TenantID, spec.Metadata.ProjectID))
-		args = append(args, "--rollout-external-engine-addrs", address)
+		args = append(args, "ROLLOUT_EXTERNAL_ENGINE_ADDRS="+address)
 	}
+	args = append(args,
+		"bash", runtimeProfile(spec),
+		"--tensor-model-parallel-size", strconv.Itoa(spec.Topology.Trainer.TP),
+		"--pipeline-model-parallel-size", strconv.Itoa(spec.Topology.Trainer.PP),
+		"--context-parallel-size", strconv.Itoa(spec.Topology.Trainer.CP),
+	)
 	if spec.Checkpoint.ResumeFrom != "" {
 		args = append(args, "--load", spec.Checkpoint.ResumeFrom)
 	}
@@ -98,11 +100,28 @@ func slimeArgs(spec contracts.RLRunSpec) []any {
 	return out
 }
 
-func strategyEntrypoint(strategy string) string {
-	if strategy == "synchronous" {
-		return "train.py"
+func runtimeProfile(spec contracts.RLRunSpec) string {
+	if spec.Algorithm.Strategy == "asynchronous" {
+		return "/opt/skyscale/slime/configs/async_qwen3_0_6b.sh"
 	}
-	return "train_async.py"
+	if spec.Topology.Mode == "disaggregated" {
+		return "/opt/skyscale/slime/configs/disaggregated_qwen3_0_6b.sh"
+	}
+	return "/opt/skyscale/slime/configs/one_gpu_qwen3_0_6b.sh"
+}
+
+func modelMountPath(spec contracts.RLRunSpec) string {
+	if spec.Model.MountPath != "" {
+		return spec.Model.MountPath
+	}
+	return "/models"
+}
+
+func modelRuntimePath(spec contracts.RLRunSpec) string {
+	if spec.Model.VolumeClaim != "" {
+		return modelMountPath(spec) + "/hf"
+	}
+	return spec.Model.Source
 }
 
 func resources(r contracts.ResourceSpec) map[string]any {
@@ -130,6 +149,8 @@ func podTemplate(spec contracts.RLRunSpec, role string, resource contracts.Resou
 		map[string]any{"name": "SKYSCALE_TENANT_ID", "value": spec.Metadata.TenantID},
 		map[string]any{"name": "SKYSCALE_PROJECT_ID", "value": spec.Metadata.ProjectID},
 		map[string]any{"name": "SKYSCALE_CONTROL_PLANE_URL", "value": "http://skyscale-control-plane.skyscale-system.svc.cluster.local:8080"},
+		map[string]any{"name": "MODEL_ROOT", "value": modelMountPath(spec)},
+		map[string]any{"name": "PYTHONPATH", "value": "/opt/skyscale/slime:/root/slime:/root/Megatron-LM"},
 		// Credentials are mounted through explicit secret references, never serialized into samples.
 	}
 	container := map[string]any{
@@ -143,9 +164,21 @@ func podTemplate(spec contracts.RLRunSpec, role string, resource contracts.Resou
 		"containers":         []any{container},
 		"nodeSelector":       mapStringAny(resource.Selectors),
 		"securityContext":    map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
+		"volumes": []any{map[string]any{
+			"name":      "slime-runtime",
+			"configMap": map[string]any{"name": "skyscale-slime-runtime", "defaultMode": int64(493)},
+		}},
 	}
+	container["volumeMounts"] = []any{map[string]any{"name": "slime-runtime", "mountPath": "/opt/skyscale/slime"}}
 	for _, secret := range spec.Security.SecretRefs {
 		container["envFrom"] = appendAny(container["envFrom"], map[string]any{"secretRef": map[string]any{"name": secret}})
+	}
+	if spec.Model.VolumeClaim != "" {
+		container["volumeMounts"] = append(container["volumeMounts"].([]any), map[string]any{"name": "models", "mountPath": modelMountPath(spec)})
+		podSpec["volumes"] = appendAny(podSpec["volumes"], map[string]any{
+			"name":                  "models",
+			"persistentVolumeClaim": map[string]any{"claimName": spec.Model.VolumeClaim},
+		})
 	}
 	return map[string]any{"metadata": map[string]any{"labels": labels(spec)}, "spec": podSpec}
 }
@@ -169,10 +202,38 @@ func appendAny(value any, item any) []any {
 // deploymentStatus/jobStatus fields remain authoritative for reconciliation.
 func RenderRayJob(spec contracts.RLRunSpec, attemptID string) *unstructured.Unstructured {
 	name := spec.Metadata.RunID + "-" + attemptID
-	head := podTemplate(spec, "head", contracts.ResourceSpec{CPU: "2", Memory: "8Gi", Selectors: spec.Topology.Trainer.Resources.Selectors}, []any{})
+	head := podTemplate(spec, "head", contracts.ResourceSpec{CPU: "1", Memory: "2Gi", Selectors: spec.Topology.Trainer.Resources.Selectors}, []any{})
 	worker := podTemplate(spec, "trainer", spec.Topology.Trainer.Resources, []any{})
-	submitter := podTemplate(spec, "submitter", contracts.ResourceSpec{CPU: "1", Memory: "2Gi"}, []any{})
+	submitter := podTemplate(spec, "submitter", contracts.ResourceSpec{CPU: "250m", Memory: "512Mi"}, []any{})
 	submitter["spec"].(map[string]any)["restartPolicy"] = "Never"
+	for _, template := range []map[string]any{head, worker, submitter} {
+		container := template["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+		container["env"] = append(container["env"].([]any), map[string]any{"name": "SKYSCALE_ATTEMPT_ID", "value": attemptID})
+	}
+	if spec.Model.VolumeClaim != "" {
+		reporter := map[string]any{
+			"name":  "skyscale-reporter",
+			"image": image(spec),
+			"args":  []any{"python", "-m", "skyscale.reporter"},
+			"env": []any{
+				map[string]any{"name": "SKYSCALE_RUN_ID", "value": spec.Metadata.RunID},
+				map[string]any{"name": "SKYSCALE_ATTEMPT_ID", "value": attemptID},
+				map[string]any{"name": "SKYSCALE_CONTROL_PLANE_URL", "value": "http://skyscale-control-plane.skyscale-system.svc.cluster.local:8080"},
+				map[string]any{"name": "SKYSCALE_CHECKPOINT_DIR", "value": modelMountPath(spec) + "/resume"},
+			},
+			"resources": map[string]any{
+				"requests": map[string]any{"cpu": "50m", "memory": "64Mi"},
+				"limits":   map[string]any{"cpu": "500m", "memory": "256Mi"},
+			},
+			"securityContext": map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}},
+			"volumeMounts":    []any{map[string]any{"name": "models", "mountPath": modelMountPath(spec)}},
+		}
+		for _, secret := range spec.Security.SecretRefs {
+			reporter["envFrom"] = appendAny(reporter["envFrom"], map[string]any{"secretRef": map[string]any{"name": secret}})
+		}
+		headSpec := head["spec"].(map[string]any)
+		headSpec["containers"] = append(headSpec["containers"].([]any), reporter)
+	}
 	workerReplicas := int64(spec.Topology.Trainer.Nodes)
 	object := map[string]any{
 		"apiVersion": "ray.io/v1", "kind": "RayJob", "metadata": metadata(spec, name),
@@ -220,7 +281,7 @@ func RenderRolloutDeployment(spec contracts.RLRunSpec, policyVersion string) *un
 func RenderRolloutDeploymentState(spec contracts.RLRunSpec, policyVersion string, replicas int, draining bool) *unstructured.Unstructured {
 	name := spec.Metadata.RunID + "-rollout"
 	r := spec.Topology.Rollout
-	args := []any{"python", "-m", "sglang.launch_server", "--model-path", spec.Model.Source,
+	args := []any{"python", "-m", "sglang.launch_server", "--model-path", modelRuntimePath(spec),
 		"--tp-size", strconv.Itoa(r.TP), "--dp-size", strconv.Itoa(r.DP),
 		"--mem-fraction-static", strconv.FormatFloat(r.MemoryFraction, 'f', 2, 64), "--host", "0.0.0.0", "--port", "8000"}
 	template := podTemplate(spec, "rollout", r.Resources, args)
@@ -234,7 +295,7 @@ func RenderRolloutDeploymentState(spec contracts.RLRunSpec, policyVersion string
 	c["readinessProbe"] = map[string]any{"httpGet": map[string]any{"path": "/server_info", "port": int64(8000)}, "periodSeconds": int64(5), "failureThreshold": int64(12)}
 	c["lifecycle"] = map[string]any{"preStop": map[string]any{"exec": map[string]any{"command": []any{"sh", "-c", "sleep 15"}}}}
 	c["env"] = append(c["env"].([]any), map[string]any{"name": "SKYSCALE_POLICY_VERSION", "value": policyVersion})
-	c["volumeMounts"] = []any{map[string]any{"name": "weights", "mountPath": "/var/lib/skyscale/weights"}}
+	c["volumeMounts"] = appendAny(c["volumeMounts"], map[string]any{"name": "weights", "mountPath": "/var/lib/skyscale/weights"})
 	registrar := map[string]any{
 		"name":  "engine-registrar",
 		"image": image(spec),
@@ -256,7 +317,7 @@ func RenderRolloutDeploymentState(spec contracts.RLRunSpec, policyVersion string
 		registrar["envFrom"] = appendAny(registrar["envFrom"], map[string]any{"secretRef": map[string]any{"name": secret}})
 	}
 	templateSpec["containers"] = append(containers, registrar)
-	templateSpec["volumes"] = []any{map[string]any{"name": "weights", "emptyDir": map[string]any{}}}
+	templateSpec["volumes"] = appendAny(templateSpec["volumes"], map[string]any{"name": "weights", "emptyDir": map[string]any{}})
 	object := map[string]any{
 		"apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata(spec, name),
 		"spec": map[string]any{

@@ -1,0 +1,47 @@
+name: Validate Slime Integration
+
+on:
+  pull_request:
+    paths:
+      - "control-plane/**"
+      - "training/slime/**"
+      - "deploy/k8s/**"
+      - "dashboard/components/training/**"
+      - "dashboard/lib/api.ts"
+      - "dashboard/package*.json"
+      - "scripts/validation/validate_slime_local.sh"
+      - ".github/workflows/validate-slime.yml"
+  push:
+    paths:
+      - "control-plane/**"
+      - "training/slime/**"
+      - "deploy/k8s/**"
+      - "dashboard/components/training/**"
+      - "dashboard/lib/api.ts"
+      - "dashboard/package*.json"
+      - "scripts/validation/validate_slime_local.sh"
+      - ".github/workflows/validate-slime.yml"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: control-plane/go.mod
+          cache-dependency-path: control-plane/go.sum
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+      - name: Validate control plane, runtime, and manifests
+        run: bash scripts/validation/validate_slime_local.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Build dashboard
+        working-directory: dashboard
+        run: npm ci && npm run build

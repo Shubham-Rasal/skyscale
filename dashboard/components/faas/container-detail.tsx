@@ -83,7 +83,7 @@ export function ContainerDetail({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 space-y-4 border-b border-border px-6 py-5">
+      <div className="shrink-0 space-y-4 border-b border-border px-4 py-4 sm:px-6 sm:py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -157,7 +157,7 @@ export function ContainerDetail({
         )}
       </div>
 
-      <Tabs defaultValue="overview" className="flex min-h-0 flex-1 flex-col px-6 py-4">
+      <Tabs defaultValue="overview" className="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-6">
         <TabsList className="h-9 w-fit">
           <TabsTrigger value="overview" className="text-xs">Overview</TabsTrigger>
           <TabsTrigger value="logs" className="text-xs">
@@ -225,7 +225,7 @@ export function ContainerDetail({
         </TabsContent>
 
         <TabsContent value="test" className="mt-4 min-h-0 flex-1">
-          <div className="grid h-[min(420px,calc(100vh-22rem))] gap-4 lg:grid-cols-2">
+          <div className="grid min-h-[420px] gap-4 xl:h-[min(420px,calc(100vh-22rem))] xl:min-h-0 xl:grid-cols-2">
             <div className="flex min-h-0 flex-col gap-2">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-muted-foreground">Request body (JSON)</p>
