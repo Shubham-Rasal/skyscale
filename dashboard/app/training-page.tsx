@@ -21,7 +21,7 @@ export default function TrainingPage() {
 
   useEffect(() => {
     if (searchParams.get('tab') === 'rollouts') {
-      router.replace('/', { scroll: false })
+      router.replace('/lab', { scroll: false })
     }
   }, [searchParams, router])
 

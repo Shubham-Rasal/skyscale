@@ -48,10 +48,10 @@ export function RlRunDetailPanel({ runId, onClose }: RlRunDetailPanelProps) {
     <aside className="flex w-[min(480px,42%)] shrink-0 flex-col border-l border-border bg-background">
       <div className="shrink-0 space-y-3 border-b border-border p-4">
         <div className="grid grid-cols-2 gap-2">
-          <MiniMetricChart title="Episode reward" data={metrics} dataKey="episode_reward" color="#34d399" />
-          <MiniMetricChart title="Training loss" data={metrics} dataKey="loss" color="#fbbf24" />
+          <MiniMetricChart title="Episode reward" data={metrics} dataKey="episode_reward" color="var(--terminal)" />
+          <MiniMetricChart title="Training loss" data={metrics} dataKey="loss" color="var(--muted-foreground)" />
         </div>
-        <MiniMetricChart title="GPU utilization" data={metrics} dataKey="gpu_util" color="#a78bfa" reservedLabel="Baseline" />
+        <MiniMetricChart title="GPU utilization" data={metrics} dataKey="gpu_util" color="var(--galaxy-cyan)" reservedLabel="Baseline" />
       </div>
 
       <Tabs defaultValue="logs" className="flex min-h-0 flex-1 flex-col">

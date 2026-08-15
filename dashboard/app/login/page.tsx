@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
+import { LogoMark } from "@/components/marketing/logo-mark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,9 +16,9 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [nextPath] = useState(() => {
-    if (typeof window === "undefined") return "/";
+    if (typeof window === "undefined") return "/lab";
     const next = new URLSearchParams(window.location.search).get("next");
-    return next?.startsWith("/") ? next : "/";
+    return next?.startsWith("/") ? next : "/lab";
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -53,21 +54,13 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="grid min-h-screen place-items-center bg-background p-6">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,oklch(0.4365_0.1044_156.7556_/_0.12),transparent_40%)]" />
+    <main className="relative grid min-h-screen place-items-center bg-background p-6">
+      <div className="pointer-events-none absolute inset-0 bg-galaxy-subtle opacity-50" />
 
-      <Card className="relative z-10 w-full max-w-md shadow-lg">
+      <Card className="relative z-10 w-full max-w-md border-border/60 bg-card/80 shadow-none backdrop-blur-sm">
         <CardHeader className="space-y-1">
-          <div className="mb-2 flex size-9 items-center justify-center rounded-lg bg-primary">
-            <svg width="15" height="15" viewBox="0 0 14 14" fill="none" aria-hidden>
-              <path
-                d="M7 1L13 4.5V9.5L7 13L1 9.5V4.5L7 1Z"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-                className="text-primary-foreground"
-              />
-            </svg>
+          <div className="mb-2">
+            <LogoMark size={36} />
           </div>
           <CardTitle className="text-xl tracking-tight">
             {mode === "signin" ? "Sign in to Skyscale" : "Create your account"}

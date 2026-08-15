@@ -5,16 +5,21 @@ import (
 	"encoding/json"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"time"
 
 	"github.com/bluequbit/faas/control-plane/akash"
 	"github.com/bluequbit/faas/control-plane/auth"
+	"github.com/bluequbit/faas/control-plane/dataplane"
+	sk8s "github.com/bluequbit/faas/control-plane/k8s"
 	"github.com/bluequbit/faas/control-plane/providers"
 	"github.com/bluequbit/faas/control-plane/registry"
+	"github.com/bluequbit/faas/control-plane/rlservice"
 	"github.com/bluequbit/faas/control-plane/sandbox"
 	"github.com/bluequbit/faas/control-plane/scheduler"
 	"github.com/bluequbit/faas/control-plane/state"
 	"github.com/bluequbit/faas/control-plane/vm"
+	"github.com/bluequbit/faas/control-plane/weights"
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 )
@@ -33,6 +38,9 @@ type APIHandler struct {
 	jobDispatcher    *scheduler.JobQueueDispatcher
 	artifactStore    *ArtifactStore
 	sandboxManager   *sandbox.SandboxManager
+	rlReconciler     *rlservice.Reconciler
+	groupedSamples   *dataplane.Store
+	weightService    *weights.Service
 	logger           *logrus.Logger
 }
 
@@ -89,7 +97,7 @@ func NewAPIHandler(functionRegistry *registry.FunctionRegistry, vmManager *vm.VM
 	reg := providers.NewRegistry(logger)
 	pool := providers.NewBufferPool(reg, stateManager, logger)
 	dispatcher := scheduler.NewJobQueueDispatcher(stateManager, reg, pool, logger)
-	return &APIHandler{
+	handler := &APIHandler{
 		functionRegistry: functionRegistry,
 		vmManager:        vmManager,
 		scheduler:        sched,
@@ -101,8 +109,22 @@ func NewAPIHandler(functionRegistry *registry.FunctionRegistry, vmManager *vm.VM
 		bufferPool:       pool,
 		jobDispatcher:    dispatcher,
 		artifactStore:    NewArtifactStore(),
+		groupedSamples:   newGroupedSampleStore(logger),
 		logger:           logger,
 	}
+	handler.weightService = newWeightService(stateManager, logger)
+	if os.Getenv("SKYSCALE_RL_KUBERNETES") == "1" {
+		kubeClient, err := sk8s.NewDynamicClient()
+		if err != nil {
+			logger.Errorf("Kubernetes RL backend disabled: %v", err)
+		} else {
+			handler.rlReconciler = rlservice.NewReconciler(stateManager, kubeClient, logger, 5*time.Second)
+			if handler.weightService != nil {
+				handler.rlReconciler.SetPromotionController(handler.weightService)
+			}
+		}
+	}
+	return handler
 }
 
 // SetSandboxManager injects the sandbox manager (called from main after construction).
@@ -115,6 +137,9 @@ func (h *APIHandler) SetSandboxManager(sm *sandbox.SandboxManager) {
 func (h *APIHandler) StartBackgroundWorkers(ctx context.Context) {
 	h.bufferPool.Start()
 	h.jobDispatcher.Start(ctx)
+	if h.rlReconciler != nil {
+		go h.rlReconciler.Run(ctx)
+	}
 }
 
 func (h *APIHandler) withSpendAuth(handler http.HandlerFunc) http.Handler {
@@ -193,12 +218,32 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	rlEnv.HandleFunc("/close", h.rlEnvCloseHandler).Methods("POST")
 	rlEnv.HandleFunc("/problems", h.rlEnvProblemsHandler).Methods("GET")
 	rlEnv.HandleFunc("/problems/{id}", h.rlEnvProblemHandler).Methods("GET")
+	rlEnv.HandleFunc("/tasks/sample", h.withRLRuntimeAuth(h.rlTaskSampleHandler)).Methods("POST")
+	rlEnv.HandleFunc("/evaluate", h.withRLRuntimeAuth(h.rlAtomicEvaluateHandler)).Methods("POST")
 
 	// RL experience buffer routes (called by rollout workers and trainer — no auth)
 	rlBuf := api.PathPrefix("/rl/buffer").Subrouter()
 	rlBuf.HandleFunc("/push", h.rlBufferPushHandler).Methods("POST")
 	rlBuf.HandleFunc("/sample", h.rlBufferSampleHandler).Methods("POST")
 	rlBuf.HandleFunc("/stats", h.rlBufferStatsHandler).Methods("GET")
+
+	// Versioned slime runtime APIs. These preserve grouped samples and policy lineage.
+	rlV1 := api.PathPrefix("/rl/v1").Subrouter()
+	rlV1.HandleFunc("/samples", h.withRLRuntimeAuth(h.rlGroupedSamplePutHandler)).Methods("POST")
+	rlV1.HandleFunc("/samples/claim", h.withRLRuntimeAuth(h.rlGroupedSampleClaimHandler)).Methods("POST")
+	rlV1.HandleFunc("/samples/backpressure", h.withRLRuntimeAuth(h.rlGroupedSampleBackpressureHandler)).Methods("GET")
+	rlV1.HandleFunc("/samples/leases/{lease_id}", h.withRLRuntimeAuth(h.rlGroupedSampleLeaseHandler)).Methods("POST")
+	rlV1.HandleFunc("/rollout-engines/register", h.withRLRuntimeAuth(h.rlRegisterEngineHandler)).Methods("POST")
+	rlV1.HandleFunc("/runs/{id}/rollout-metrics", h.withRLRuntimeAuth(h.rlRolloutMetricsHandler)).Methods("POST")
+	rlV1.HandleFunc("/weights", h.withRLRuntimeAuth(h.rlPublishWeightsHandler)).Methods("POST")
+	rlV1.HandleFunc("/weights/gc", h.withRLRuntimeAuth(h.rlGarbageCollectWeightsHandler)).Methods("POST")
+	rlV1.HandleFunc("/weights/rollback", h.withRLRuntimeAuth(h.rlRollbackWeightsHandler)).Methods("POST")
+	rlV1.HandleFunc("/weights/{version}/ack", h.withRLRuntimeAuth(h.rlAcknowledgeWeightsHandler)).Methods("POST")
+	rlV1.HandleFunc("/weights/{version}/artifact", h.withRLRuntimeAuth(h.rlWeightArtifactHandler)).Methods("GET")
+	rlV1.HandleFunc("/runs/{id}/weights/{version}/evaluate", h.withRLRuntimeAuth(h.rlEvaluateWeightsHandler)).Methods("POST")
+	rlV1.HandleFunc("/runs/{id}/checkpoints", h.withRLRuntimeAuth(h.rlCommitCheckpointHandler)).Methods("POST")
+	rlV1.HandleFunc("/runs/{id}/trainer-progress", h.withRLRuntimeAuth(h.rlTrainerProgressHandler)).Methods("POST")
+	rlV1.HandleFunc("/runs/{id}/usage", h.withRLRuntimeAuth(h.rlReportUsageHandler)).Methods("POST")
 
 	// RL run coordinator routes (dashboard)
 	api.Handle("/rl/runs", h.withSpendAuth(h.rlStartRunHandler)).Methods("POST")
@@ -211,6 +256,8 @@ func (h *APIHandler) RegisterRoutes(router *mux.Router) {
 	rlRuns.HandleFunc("/{id}/policy-reload", h.rlPolicyReloadHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}/policy-redeploy", h.rlPolicyRedeployHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}/collect", h.rlCollectHandler).Methods("POST")
+	rlRuns.HandleFunc("/{id}/suspend", h.rlSuspendRunHandler).Methods("POST")
+	rlRuns.HandleFunc("/{id}/resume", h.rlResumeRunHandler).Methods("POST")
 	rlRuns.HandleFunc("/{id}/events", h.rlGetEventsHandler).Methods("GET")
 	rlRuns.HandleFunc("/{id}/events", h.rlPostEventHandler).Methods("POST")
 }

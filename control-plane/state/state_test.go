@@ -146,3 +146,57 @@ func TestSandboxExecCRUD(t *testing.T) {
 		t.Errorf("expected stdout 'hello\\n', got %q", got.Stdout)
 	}
 }
+
+func TestFairClaimSchedulingRotatesTenants(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&RLFairClaimTicket{}, &RLFairSchedulerState{}); err != nil {
+		t.Fatal(err)
+	}
+	sm := NewStateManagerFromDB(db, logrus.New())
+	now := time.Now()
+	if err := db.Create(&[]RLFairClaimTicket{
+		{TenantID: "a", RunID: "run-a", Owner: "trainer-a", CreatedAt: now},
+		{TenantID: "b", RunID: "run-b", Owner: "trainer-b", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&RLFairSchedulerState{ID: "global", LastTenant: "a"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if granted, err := sm.AcquireFairClaimTurn("a", "run-a", "trainer-a"); err != nil || granted {
+		t.Fatalf("tenant a skipped tenant b's turn: granted=%v err=%v", granted, err)
+	}
+	if granted, err := sm.AcquireFairClaimTurn("b", "run-b", "trainer-b"); err != nil || !granted {
+		t.Fatalf("tenant b did not receive its turn: granted=%v err=%v", granted, err)
+	}
+	if granted, err := sm.AcquireFairClaimTurn("a", "run-a", "trainer-a"); err != nil || !granted {
+		t.Fatalf("scheduler did not rotate back to tenant a: granted=%v err=%v", granted, err)
+	}
+}
+
+func TestPolicyVersionsAreRunScoped(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&PolicyVersionRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	sm := NewStateManagerFromDB(db, logrus.New())
+	for _, runID := range []string{"run-a", "run-b"} {
+		if err := sm.SavePolicyVersion(&PolicyVersionRecord{ID: "v1", RunID: runID, OptimizerStep: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := sm.GetPolicyVersion("run-a", "v1")
+	if err != nil || a.RunID != "run-a" {
+		t.Fatalf("scoped lookup failed: %#v err=%v", a, err)
+	}
+	var count int64
+	if err := db.Model(&PolicyVersionRecord{}).Count(&count).Error; err != nil || count != 2 {
+		t.Fatalf("expected two run-scoped versions: count=%d err=%v", count, err)
+	}
+}

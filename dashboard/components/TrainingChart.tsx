@@ -11,7 +11,7 @@ interface Props {
   trainingMetrics: Record<string, TrainingMetric[]>
 }
 
-const COLORS = ['#34d399', '#f87171', '#60a5fa', '#fbbf24']
+const COLORS = ['var(--foreground)', 'var(--terminal)', 'var(--muted-foreground)', 'var(--chart-4)']
 
 export function TrainingChart({ trainingMetrics }: Props) {
   const jobIDs = Object.keys(trainingMetrics)

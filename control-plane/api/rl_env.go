@@ -1,6 +1,8 @@
 package api
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -215,6 +217,98 @@ func (h *APIHandler) rlEnvProblemHandler(w http.ResponseWriter, r *http.Request)
 	http.Error(w, "problem not found", http.StatusNotFound)
 }
 
+// rlTaskSampleHandler returns a versioned task without allocating a sandbox.
+// The rollout runtime sends the selected task to the atomic evaluate endpoint.
+func (h *APIHandler) rlTaskSampleHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RunID      string `json:"run_id"`
+		Difficulty string `json:"difficulty"`
+		Seed       int64  `json:"seed"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RunID == "" {
+		http.Error(w, "run_id is required", http.StatusBadRequest)
+		return
+	}
+	candidates := defaultProblems
+	if body.Difficulty != "" {
+		candidates = nil
+		for _, problem := range defaultProblems {
+			if problem.Difficulty == body.Difficulty {
+				candidates = append(candidates, problem)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		http.Error(w, "no matching tasks", http.StatusNotFound)
+		return
+	}
+	source := rand.New(rand.NewSource(body.Seed))
+	if body.Seed == 0 {
+		source = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	problem := candidates[source.Intn(len(candidates))]
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"api_version": "rl.skyscale.dev/v1alpha1",
+		"task_id":     problem.ID, "prompt": problem.Prompt, "difficulty": problem.Difficulty,
+		"environment_version": "code-v1",
+	})
+}
+
+// rlAtomicEvaluateHandler allocates, executes, and always destroys a sandbox.
+func (h *APIHandler) rlAtomicEvaluateHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RunID  string `json:"run_id"`
+		TaskID string `json:"task_id"`
+		Code   string `json:"code"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil || body.RunID == "" || body.TaskID == "" || body.Code == "" {
+		http.Error(w, "run_id, task_id, and code are required", http.StatusBadRequest)
+		return
+	}
+	var problem *Problem
+	for i := range defaultProblems {
+		if defaultProblems[i].ID == body.TaskID {
+			copy := defaultProblems[i]
+			problem = &copy
+			break
+		}
+	}
+	if problem == nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	if h.sandboxManager == nil {
+		http.Error(w, "sandbox manager not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	sb, err := h.sandboxManager.CreateSandbox("python3", 300)
+	if err != nil {
+		http.Error(w, "failed to allocate evaluation sandbox", http.StatusServiceUnavailable)
+		return
+	}
+	defer func() {
+		if err := h.sandboxManager.DestroySandbox(sb.ID); err != nil {
+			h.logger.Errorf("atomic evaluation cleanup sandbox=%s: %v", sb.ID, err)
+		}
+	}()
+	passed, total, stdout, stderr, exitCode := runTestCases(h, sb.ID, body.Code, problem.TestCases)
+	reward := 0.0
+	if total > 0 {
+		reward = float64(passed) / float64(total)
+	}
+	lengthPenalty := max(0, float64(len(body.Code)-500)*0.0001)
+	reward = max(0, reward-lengthPenalty)
+	recordRLEvent(body.RunID, "reward", "info", fmt.Sprintf("task=%s passed=%d/%d reward=%.4f", body.TaskID, passed, total, reward))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"api_version": "rl.skyscale.dev/v1alpha1", "task_id": body.TaskID,
+		"reward": reward, "reward_components": map[string]float64{"tests": float64(passed) / float64(total), "length_penalty": -lengthPenalty},
+		"passed_tests": passed, "total_tests": total, "stdout": stdout, "stderr": stderr, "exit_code": exitCode,
+		"environment_version": "code-v1",
+	})
+}
+
 // runTestCases uploads the submission + test runner to the sandbox and executes it.
 // Returns (passed, total, stdout, stderr, exitCode).
 func runTestCases(h *APIHandler, sandboxID, code string, testCases []string) (int, int, string, string, int) {
@@ -236,17 +330,24 @@ func runTestCases(h *APIHandler, sandboxID, code string, testCases []string) (in
 	lastExitCode := 0
 
 	for _, tc := range testCases {
+		markerBytes := make([]byte, 16)
+		if _, err := cryptorand.Read(markerBytes); err != nil {
+			lastStderr = "failed to generate evaluation marker"
+			lastExitCode = 1
+			continue
+		}
+		passMarker := "__SKYSCALE_PASS_" + hex.EncodeToString(markerBytes) + "__"
 		testScript := fmt.Sprintf(`%s
 
 # test case
 try:
     %s
-    print("__PASS__")
+    print(%q)
 except AssertionError as e:
     print(f"__FAIL__: {e}")
 except Exception as e:
     print(f"__ERROR__: {e}")
-`, code, strings.ReplaceAll(tc, "\n", "\n    "))
+`, code, strings.ReplaceAll(tc, "\n", "\n    "), passMarker)
 
 		result, err := h.sandboxManager.ExecInSandbox(sandboxID, testScript, "python3", 10)
 		if err != nil {
@@ -257,8 +358,13 @@ except Exception as e:
 		lastStdout = result.Stdout
 		lastStderr = result.Stderr
 		lastExitCode = result.ExitCode
-		if strings.Contains(result.Stdout, "__PASS__") {
-			passed++
+		if result.ExitCode == 0 {
+			for _, line := range strings.Split(result.Stdout, "\n") {
+				if strings.TrimSpace(line) == passMarker {
+					passed++
+					break
+				}
+			}
 		}
 	}
 

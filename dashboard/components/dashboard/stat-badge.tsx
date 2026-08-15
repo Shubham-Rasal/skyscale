@@ -8,10 +8,18 @@ interface StatBadgeProps {
 }
 
 const toneStyles = {
-  primary: 'text-primary',
+  primary: 'border-border bg-card',
+  success: 'border-border bg-card',
+  warning: 'border-border bg-card',
+  running: 'border-border bg-card',
+  muted: 'border-border bg-card',
+}
+
+const valueStyles = {
+  primary: 'text-foreground',
   success: 'text-[var(--success)]',
   warning: 'text-[var(--warning)]',
-  running: 'text-[var(--running)]',
+  running: 'text-foreground',
   muted: 'text-muted-foreground',
 }
 
@@ -19,11 +27,12 @@ export function StatBadge({ label, value, tone = 'primary', className }: StatBad
   return (
     <div
       className={cn(
-        'flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs',
+        'flex items-center gap-1.5 rounded-sm border px-2.5 py-1.5 text-xs',
+        toneStyles[tone],
         className,
       )}
     >
-      <span className={cn('font-semibold tabular-nums', toneStyles[tone])}>{value}</span>
+      <span className={cn('font-semibold tabular-nums', valueStyles[tone])}>{value}</span>
       <span className="text-muted-foreground">{label}</span>
     </div>
   )

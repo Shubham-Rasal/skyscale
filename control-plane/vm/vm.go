@@ -160,6 +160,20 @@ func (m *VMManager) manageWarmPool() {
 
 // GetVM gets a VM from the warm pool or creates a new one
 func (m *VMManager) GetVM() (*state.VM, error) {
+	// E2E / local test mode uses a shared host daemon instead of Firecracker.
+	if os.Getenv("DAEMON_PATH") != "" {
+		vm, err := m.GetOrCreateTestHostVM()
+		if err != nil {
+			return nil, err
+		}
+		vm.Status = "busy"
+		vm.LastUsed = time.Now()
+		if err := m.stateManager.SaveVM(vm); err != nil {
+			return nil, err
+		}
+		return vm, nil
+	}
+
 	// Try to get a VM from the warm pool
 	select {
 	case vm := <-m.warmPool:
@@ -427,6 +441,10 @@ func (m *VMManager) ReturnVM(id string) error {
 
 // terminateVM terminates a VM
 func (m *VMManager) terminateVM(id string) error {
+	if id == "host-vm-test" {
+		return nil
+	}
+
 	m.mu.Lock()
 	vmInstance, exists := m.vms[id]
 	m.mu.Unlock()
@@ -436,8 +454,10 @@ func (m *VMManager) terminateVM(id string) error {
 	}
 
 	// Stop the VM
-	if err := vmInstance.Machine.StopVMM(); err != nil {
-		m.logger.Errorf("Failed to stop VM: %v", err)
+	if vmInstance.Machine != nil {
+		if err := vmInstance.Machine.StopVMM(); err != nil {
+			m.logger.Errorf("Failed to stop VM: %v", err)
+		}
 	}
 
 	// Remove VM directory
@@ -478,8 +498,10 @@ func (m *VMManager) Cleanup() {
 	defer m.mu.Unlock()
 
 	for id, vmInstance := range m.vms {
-		if err := vmInstance.Machine.StopVMM(); err != nil {
-			m.logger.Errorf("Failed to stop VM: %v", err)
+		if vmInstance.Machine != nil {
+			if err := vmInstance.Machine.StopVMM(); err != nil {
+				m.logger.Errorf("Failed to stop VM: %v", err)
+			}
 		}
 		m.logger.Infof("Terminated VM %s during cleanup", id)
 	}

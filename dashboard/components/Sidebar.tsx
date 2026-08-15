@@ -21,6 +21,7 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet'
 import { AccountSettings } from '@/components/dashboard/account-settings'
+import { LogoMark } from '@/components/marketing/logo-mark'
 import { authClient } from '@/lib/auth-client'
 import { cn } from '@/lib/utils'
 
@@ -28,7 +29,7 @@ const NAV = [
   {
     section: 'Lab',
     items: [
-      { label: 'Training', href: '/', icon: TrendingUp },
+      { label: 'Training', href: '/lab', icon: TrendingUp },
       { label: 'Templates', href: '/templates', icon: LayoutGrid },
       { label: 'Sandboxes', href: '/faas', icon: Box },
     ],
@@ -60,24 +61,10 @@ export function Sidebar({ connected }: { connected: boolean }) {
 
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="flex items-center gap-2.5 px-4 py-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary shadow-sm">
-          <svg width="15" height="15" viewBox="0 0 14 14" fill="none" aria-hidden>
-            <path
-              d="M7 1L13 4.5V9.5L7 13L1 9.5V4.5L7 1Z"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinejoin="round"
-              className="text-primary-foreground"
-            />
-          </svg>
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold tracking-tight text-sidebar-accent-foreground">
-            Skyscale
-          </p>
-          <p className="truncate text-[11px] text-sidebar-foreground">Compute Platform</p>
-        </div>
+      <div className="flex items-center px-4 py-4">
+        <Link href="/" className="transition-opacity hover:opacity-90">
+          <LogoMark size={40} />
+        </Link>
       </div>
 
       <Separator className="bg-sidebar-border" />
@@ -98,14 +85,14 @@ export function Sidebar({ connected }: { connected: boolean }) {
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors',
+                        'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-all',
                         active
-                          ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
-                          : 'text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground',
+                          ? 'bg-accent font-medium text-sidebar-accent-foreground'
+                          : 'text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
                       )}
                     >
                       <Icon
-                        className={cn('size-4 shrink-0', active ? 'text-primary' : 'opacity-80')}
+                        className={cn('size-4 shrink-0', active ? 'text-foreground' : 'opacity-70')}
                       />
                       <span className="truncate">{item.label}</span>
                     </Link>
@@ -126,7 +113,7 @@ export function Sidebar({ connected }: { connected: boolean }) {
             className="flex w-full items-center gap-2.5 px-3 py-3 text-left transition-colors hover:bg-sidebar-accent/60"
           >
             <Avatar className="size-8">
-              <AvatarFallback className="bg-primary/20 text-xs font-semibold text-primary">
+              <AvatarFallback className="bg-muted text-xs font-medium text-foreground">
                 {isPending ? '…' : profileInitials(session?.user.name, session?.user.email)}
               </AvatarFallback>
             </Avatar>

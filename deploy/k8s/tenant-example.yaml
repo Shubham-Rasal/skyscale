@@ -1,0 +1,91 @@
+# Render one isolated namespace per tenant/project. Replace example identifiers.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: skyscale-tenant-example-project-example
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    rl.skyscale.dev/tenant: tenant-example
+    rl.skyscale.dev/project: project-example
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: skyscale-rl-runner
+  namespace: skyscale-tenant-example-project-example
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rl-tenant-quota
+  namespace: skyscale-tenant-example-project-example
+spec:
+  hard:
+    requests.nvidia.com/gpu: "8"
+    limits.nvidia.com/gpu: "8"
+    requests.cpu: "128"
+    requests.memory: 512Gi
+    count/jobs.batch: "20"
+    count/rayjobs.ray.io: "4"
+    persistentvolumeclaims: "20"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: rl-defaults
+  namespace: skyscale-tenant-example-project-example
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: "1"
+        memory: 2Gi
+      default:
+        cpu: "8"
+        memory: 64Gi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: skyscale-tenant-example-project-example
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rl-internal
+  namespace: skyscale-tenant-example-project-example
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: skyscale-rl
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: skyscale-system
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: skyscale-rl
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: skyscale-system
+      ports:
+        - protocol: TCP
+          port: 8080
