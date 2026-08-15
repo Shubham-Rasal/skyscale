@@ -57,6 +57,25 @@ func appendHFToken(env map[string]string) {
 // rlStartRunHandler: POST /api/rl/runs
 // Starts a distributed RL training run: spawns policy server, trainer, and N rollout workers.
 func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
+	rawBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 2<<20))
+	if err != nil {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	var backendProbe struct {
+		Backend string `json:"backend"`
+		Spec    *struct {
+			Backend string `json:"backend"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(rawBody, &backendProbe); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if backendProbe.Backend == "slime" || (backendProbe.Spec != nil && backendProbe.Spec.Backend == "slime") {
+		h.rlStartSlimeRunHandler(w, r, rawBody)
+		return
+	}
 	var body struct {
 		BaseModel       string `json:"base_model"`
 		NumWorkers      int    `json:"num_workers"`
@@ -69,7 +88,7 @@ func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
 		WorkerMaxSteps  int    `json:"worker_max_steps"`
 		ClosedLoop      bool   `json:"closed_loop"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(rawBody, &body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
@@ -275,11 +294,11 @@ func (h *APIHandler) rlStartRunHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]any{
-		"run_id":           runID,
-		"status":           "running",
-		"trainer_exec_id":  trainerExecID,
-		"policy_exec_id":   policyExecID,
-		"worker_exec_ids":  workerExecIDs,
+		"run_id":          runID,
+		"status":          "running",
+		"trainer_exec_id": trainerExecID,
+		"policy_exec_id":  policyExecID,
+		"worker_exec_ids": workerExecIDs,
 	})
 }
 
@@ -448,6 +467,19 @@ func (h *APIHandler) rlStopRunHandler(w http.ResponseWriter, r *http.Request) {
 	run, err := h.stateManager.GetRLRun(id)
 	if err != nil {
 		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+
+	if run.Backend == "slime" {
+		run.DesiredState = "cancelled"
+		run.Status = "cancelling"
+		run.UpdatedAt = time.Now()
+		if err := h.stateManager.SaveRLRun(run); err != nil {
+			http.Error(w, "failed to request cancellation", http.StatusInternalServerError)
+			return
+		}
+		recordRLEvent(id, "controller", "info", "cancellation requested; owned Kubernetes resources will be deleted")
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 

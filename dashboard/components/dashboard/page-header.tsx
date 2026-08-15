@@ -25,8 +25,9 @@ export function PageHeader({
   className,
 }: PageHeaderProps) {
   return (
-    <header className={cn('shrink-0 border-b border-border bg-background', className)}>
-      <div className="flex h-14 items-center gap-3 px-6">
+    <header className={cn('relative shrink-0 border-b border-border bg-background', className)}>
+      <div className="pointer-events-none absolute inset-0 bg-galaxy-subtle opacity-30" />
+      <div className="relative flex h-[4.25rem] items-center gap-3 px-6">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2.5">
             <h1 className="truncate text-base font-semibold tracking-tight text-foreground">
@@ -53,7 +54,7 @@ export function PageHeader({
       </div>
 
       {toolbar && (
-        <div className="border-t border-border px-6 py-2.5">{toolbar}</div>
+        <div className="relative border-t border-border px-6 py-2.5">{toolbar}</div>
       )}
     </header>
   )

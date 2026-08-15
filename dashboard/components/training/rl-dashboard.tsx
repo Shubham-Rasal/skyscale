@@ -106,25 +106,45 @@ export function RlDashboard({ newRunOpen, onNewRunOpenChange, onStatsChange }: R
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <div className="flex min-w-0 flex-1 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="shrink-0 space-y-4 border-b border-border px-6 py-5">
-            <div>
-              <p className="font-mono text-xs text-muted-foreground">
-                {selected ? selected.ID : 'skyscale-rl-trainer'}
-              </p>
-              <h2 className="mt-1 text-2xl font-semibold tracking-tight">RL Runs</h2>
-            </div>
-
-            <div className="flex items-end gap-6">
+          <div className="shrink-0 space-y-5 border-b border-border px-6 py-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <p className="text-4xl font-semibold tabular-nums tracking-tight">{activeRuns}</p>
-                <p className="mt-1 text-sm text-muted-foreground">Active runs</p>
+                <p className="font-mono text-xs text-muted-foreground">
+                  {selected ? selected.ID : 'skyscale-rl-trainer'}
+                </p>
+                <h2 className="mt-1 text-2xl font-semibold tracking-tight">RL Runs</h2>
               </div>
-              <div className="text-sm text-muted-foreground">
-                {runs.length} total · {completedRuns} completed
-              </div>
+              {selected && (
+                <StatusBadge status={selected.Status} className="mt-1" />
+              )}
             </div>
 
-            <RlHeroChart data={heroMetrics} />
+            <div className="grid gap-3 sm:grid-cols-3">
+              {[
+                { label: 'Active runs', value: activeRuns, hint: 'Running or starting' },
+                { label: 'Total runs', value: runs.length, hint: `${completedRuns} completed` },
+                {
+                  label: 'Latest reward',
+                  value: heroMetrics.length
+                    ? heroMetrics[heroMetrics.length - 1].episode_reward.toFixed(3)
+                    : '—',
+                  hint: selected?.BaseModel.split('/').pop() ?? 'No run selected',
+                },
+              ].map((stat) => (
+                <div
+                  key={stat.label}
+                  className="rounded-sm border border-border bg-card px-4 py-3"
+                >
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {stat.label}
+                  </p>
+                  <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight">{stat.value}</p>
+                  <p className="mt-1 truncate text-xs text-muted-foreground">{stat.hint}</p>
+                </div>
+              ))}
+            </div>
+
+            <RlHeroChart data={heroMetrics} className="h-52" />
           </div>
 
           <div className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-3">
@@ -171,11 +191,11 @@ export function RlDashboard({ newRunOpen, onNewRunOpenChange, onStatsChange }: R
                       key={run.ID}
                       className={cn(
                         'cursor-pointer',
-                        selectedRun === run.ID && 'bg-primary/5',
+                        selectedRun === run.ID && 'bg-accent',
                       )}
                       onClick={() => setSelectedRun(run.ID)}
                     >
-                      <TableCell className="font-mono text-xs text-primary">{run.ID}</TableCell>
+                      <TableCell className="font-mono text-xs">{run.ID}</TableCell>
                       <TableCell className="max-w-[140px] truncate font-mono text-xs">
                         {run.BaseModel.split('/').pop()}
                       </TableCell>

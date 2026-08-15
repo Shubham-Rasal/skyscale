@@ -89,6 +89,30 @@ var (
 		},
 		[]string{"role", "gpu_model"},
 	)
+	RLSampleAgeSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "skyscale_rl_sample_age_seconds", Help: "Age of samples at trainer admission.", Buckets: prometheus.ExponentialBuckets(1, 2, 12)},
+		[]string{"tenant_id", "run_id", "action"},
+	)
+	RLPolicyLagSteps = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "skyscale_rl_policy_lag_steps", Help: "Trainer minus behavior policy step.", Buckets: prometheus.ExponentialBuckets(1, 2, 10)},
+		[]string{"tenant_id", "run_id", "action"},
+	)
+	RLDiscardedTokensTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "skyscale_rl_discarded_tokens_total", Help: "Generated tokens discarded by staleness or cancellation."},
+		[]string{"tenant_id", "run_id", "reason"},
+	)
+	RLWeightPropagationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "skyscale_rl_weight_propagation_seconds", Help: "Time from committed manifest to fleet acknowledgement.", Buckets: prometheus.ExponentialBuckets(.1, 2, 14)},
+		[]string{"tenant_id", "run_id", "format", "status"},
+	)
+	RLResourceSecondsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "skyscale_rl_resource_seconds_total", Help: "Metered resource seconds for quota and cost attribution."},
+		[]string{"tenant_id", "project_id", "run_id", "resource"},
+	)
+	RLEstimatedCostUSDTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "skyscale_rl_estimated_cost_usd_total", Help: "Estimated run cost in USD."},
+		[]string{"tenant_id", "project_id", "run_id"},
+	)
 )
 
 func init() {
@@ -104,6 +128,12 @@ func init() {
 		JobDispatchFailuresTotal,
 		JobDispatchDurationSeconds,
 		JobDeferredTotal,
+		RLSampleAgeSeconds,
+		RLPolicyLagSteps,
+		RLDiscardedTokensTotal,
+		RLWeightPropagationSeconds,
+		RLResourceSecondsTotal,
+		RLEstimatedCostUSDTotal,
 	)
 }
 

@@ -8,13 +8,18 @@ package state
 
 import (
 	"context"
+	"errors"
+	"os"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
-	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	gormlogger "gorm.io/gorm/logger"
 )
 
@@ -137,18 +142,164 @@ type Trajectory struct {
 
 // RLRun tracks a distributed RL training run (coordinator + workers + trainer).
 type RLRun struct {
-	ID              string    `gorm:"primaryKey"`
-	Status          string    // starting | running | stopped | completed
-	BaseModel       string
-	NumWorkers      int
-	GPUModel        string
-	PolicyServerURL string
-	TrainerExecID   string
-	WorkerExecIDs   string // JSON array of execution IDs
-	ClosedLoop      bool    // serialized collect → train → redeploy cycles
-	TrainingRound   int     // current training round (incremented after each optimizer step)
+	ID                     string `gorm:"primaryKey"`
+	APIVersion             string
+	TenantID               string `gorm:"index:idx_rl_tenant_status"`
+	ProjectID              string `gorm:"index"`
+	Backend                string `gorm:"index"`
+	Status                 string // starting | running | stopped | completed
+	DesiredState           string
+	ObservedState          string
+	FailureReason          string
+	Namespace              string
+	CurrentAttemptID       string
+	PolicyVersion          string
+	LastGoodPolicyVersion  string
+	CheckpointID           string
+	SnapshotJSON           string `gorm:"type:text"`
+	SnapshotSHA256         string
+	BaseModel              string
+	NumWorkers             int
+	GPUModel               string
+	PolicyServerURL        string
+	TrainerExecID          string
+	WorkerExecIDs          string // JSON array of execution IDs
+	ClosedLoop             bool   // serialized collect → train → redeploy cycles
+	TrainingRound          int    // current training round (incremented after each optimizer step)
+	OptimizerStep          int64
+	Backpressured          bool
+	RolloutDraining        bool
+	RolloutQueueDepth      int
+	RolloutGenerationP95   float64
+	RolloutTokensPerSecond float64
+	RolloutTrainerDemand   int
+	RolloutDesiredReplicas int
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// RLAttempt tracks retries independently from the logical run.
+type RLAttempt struct {
+	ID                 string `gorm:"primaryKey"`
+	RunID              string `gorm:"index"`
+	Number             int
+	Status             string
+	RayJobName         string
+	Namespace          string
+	ResumeCheckpointID string
+	FailureReason      string
+	StartedAt          time.Time
+	FinishedAt         time.Time
+}
+
+// BackendResource records Kubernetes ownership and observed state.
+type BackendResource struct {
+	ID              uint   `gorm:"primaryKey;autoIncrement"`
+	RunID           string `gorm:"uniqueIndex:idx_backend_resource"`
+	AttemptID       string `gorm:"index"`
+	APIVersion      string
+	Kind            string `gorm:"uniqueIndex:idx_backend_resource"`
+	Namespace       string `gorm:"uniqueIndex:idx_backend_resource"`
+	Name            string `gorm:"uniqueIndex:idx_backend_resource"`
+	UID             string
+	Generation      int64
+	ResourceVersion string
+	DesiredState    string
+	ObservedState   string
+	FailureReason   string
+	DeletionPending bool
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type PolicyVersionRecord struct {
+	RecordID      uint   `gorm:"primaryKey;autoIncrement"`
+	ID            string `gorm:"uniqueIndex:idx_policy_run_version"`
+	RunID         string `gorm:"uniqueIndex:idx_policy_run_version"`
+	OptimizerStep int64
+	ParentVersion string
+	CheckpointID  string
+	Status        string
+	CreatedAt     time.Time
+}
+
+type RLFairClaimTicket struct {
+	ID        uint   `gorm:"primaryKey;autoIncrement"`
+	TenantID  string `gorm:"index"`
+	RunID     string `gorm:"uniqueIndex:idx_fair_claim"`
+	Owner     string `gorm:"uniqueIndex:idx_fair_claim"`
+	CreatedAt time.Time
+}
+
+type RLFairSchedulerState struct {
+	ID         string `gorm:"primaryKey"`
+	LastTenant string
+	UpdatedAt  time.Time
+}
+
+type RLCheckpointRecord struct {
+	ID             string `gorm:"primaryKey"`
+	RunID          string `gorm:"index:idx_checkpoint_step,priority:1"`
+	AttemptID      string
+	OptimizerStep  int64 `gorm:"uniqueIndex:idx_checkpoint_step,priority:2"`
+	ResumeURI      string
+	ServingURI     string
+	PolicyVersion  string
+	ManifestSHA256 string
+	Status         string
+	CreatedAt      time.Time
+}
+
+type RLUsageRecord struct {
+	ID               uint   `gorm:"primaryKey;autoIncrement"`
+	TenantID         string `gorm:"index"`
+	ProjectID        string `gorm:"index"`
+	RunID            string `gorm:"index"`
+	AttemptID        string
+	GPUSeconds       float64
+	CPUSeconds       float64
+	StorageByteHours float64
+	NetworkBytes     int64
+	GeneratedTokens  int64
+	DiscardedTokens  int64
+	SandboxSeconds   float64
+	EstimatedCostUSD float64
+	RecordedAt       time.Time
+}
+
+type RLAuditRecord struct {
+	ID        uint   `gorm:"primaryKey;autoIncrement"`
+	TenantID  string `gorm:"index"`
+	ProjectID string `gorm:"index"`
+	RunID     string `gorm:"index"`
+	Actor     string
+	Action    string
+	Resource  string
+	Outcome   string
+	RemoteIP  string
+	CreatedAt time.Time
+}
+
+type RLWeightServiceState struct {
+	RunID     string `gorm:"primaryKey"`
+	Payload   string `gorm:"type:text"`
+	UpdatedAt time.Time
+}
+
+type RLEvaluationRecord struct {
+	ID            string `gorm:"primaryKey"`
+	RunID         string `gorm:"uniqueIndex:idx_eval_run_policy"`
+	PolicyVersion string `gorm:"uniqueIndex:idx_eval_run_policy"`
+	CheckpointID  string
+	RayJobName    string
+	Status        string
+	MetricsJSON   string `gorm:"type:text"`
+	GatesPassed   bool
+	Final         bool
+	CanaryState   string
+	FailureReason string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // TrainingMetricRecord persists a single training step metric to SQLite.
@@ -228,16 +379,24 @@ func NewStateManagerFromDB(db *gorm.DB, logger *logrus.Logger) *StateManager {
 
 // NewStateManager creates a new state manager
 func NewStateManager(logger *logrus.Logger) (*StateManager, error) {
-	// Initialize SQLite database
-	db, err := gorm.Open(sqlite.Open("skyscale.db"), &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
-	})
+	var dialector gorm.Dialector
+	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
+		dialector = postgres.Open(databaseURL)
+	} else {
+		path := os.Getenv("DB_PATH")
+		if path == "" {
+			path = "skyscale.db"
+		}
+		logger.Warn("DATABASE_URL is unset; using SQLite local-development state")
+		dialector = sqlite.Open(path)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
 	if err != nil {
 		return nil, err
 	}
 
 	// Auto migrate the schema
-	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{}, &Deployment{}, &TrainingMetricRecord{}, &StandbyVM{}, &JobQueueItem{}, &Trajectory{}, &RLRun{})
+	err = db.AutoMigrate(&Function{}, &Execution{}, &VM{}, &Sandbox{}, &SandboxExec{}, &Deployment{}, &TrainingMetricRecord{}, &StandbyVM{}, &JobQueueItem{}, &Trajectory{}, &RLRun{}, &RLAttempt{}, &BackendResource{}, &PolicyVersionRecord{}, &RLCheckpointRecord{}, &RLUsageRecord{}, &RLAuditRecord{}, &RLWeightServiceState{}, &RLFairClaimTicket{}, &RLFairSchedulerState{}, &RLEvaluationRecord{})
 	if err != nil {
 		return nil, err
 	}
@@ -540,6 +699,187 @@ func (s *StateManager) GetRLRun(id string) (*RLRun, error) {
 func (s *StateManager) ListRLRuns() ([]RLRun, error) {
 	var runs []RLRun
 	return runs, s.db.Order("created_at desc").Find(&runs).Error
+}
+
+func (s *StateManager) CountActiveTenantRLRuns(tenantID string) (int64, error) {
+	var count int64
+	err := s.db.Model(&RLRun{}).
+		Where("tenant_id = ? AND status IN ?", tenantID, []string{"starting", "running", "suspended", "cancelling"}).
+		Count(&count).Error
+	return count, err
+}
+
+func (s *StateManager) SaveRLAttempt(attempt *RLAttempt) error {
+	return s.db.Save(attempt).Error
+}
+
+func (s *StateManager) GetRLAttempt(id string) (*RLAttempt, error) {
+	var attempt RLAttempt
+	if err := s.db.First(&attempt, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &attempt, nil
+}
+
+func (s *StateManager) ListRLAttempts(runID string) ([]RLAttempt, error) {
+	var attempts []RLAttempt
+	return attempts, s.db.Where("run_id = ?", runID).Order("number asc").Find(&attempts).Error
+}
+
+func (s *StateManager) SaveBackendResource(resource *BackendResource) error {
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "run_id"}, {Name: "kind"}, {Name: "namespace"}, {Name: "name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"attempt_id", "api_version", "uid", "generation", "resource_version", "desired_state", "observed_state", "failure_reason", "deletion_pending", "updated_at"}),
+	}).Create(resource).Error
+}
+
+func (s *StateManager) ListBackendResources(runID string) ([]BackendResource, error) {
+	var resources []BackendResource
+	return resources, s.db.Where("run_id = ?", runID).Order("kind, name").Find(&resources).Error
+}
+
+func (s *StateManager) DeleteBackendResource(id uint) error {
+	return s.db.Delete(&BackendResource{}, id).Error
+}
+
+func (s *StateManager) SavePolicyVersion(version *PolicyVersionRecord) error {
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}, {Name: "run_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"optimizer_step", "parent_version", "checkpoint_id", "status"}),
+	}).Create(version).Error
+}
+
+func (s *StateManager) GetPolicyVersion(runID, id string) (*PolicyVersionRecord, error) {
+	var version PolicyVersionRecord
+	if err := s.db.First(&version, "run_id = ? AND id = ?", runID, id).Error; err != nil {
+		return nil, err
+	}
+	return &version, nil
+}
+
+// AcquireFairClaimTurn durably rotates trainer claims between tenants while
+// preserving FIFO order within each tenant.
+func (s *StateManager) AcquireFairClaimTurn(tenantID, runID, owner string) (bool, error) {
+	granted := false
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		ticket := RLFairClaimTicket{TenantID: tenantID, RunID: runID, Owner: owner, CreatedAt: time.Now()}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&ticket).Error; err != nil {
+			return err
+		}
+		var tickets []RLFairClaimTicket
+		if err := tx.Order("created_at asc, id asc").Find(&tickets).Error; err != nil {
+			return err
+		}
+		firstByTenant := map[string]RLFairClaimTicket{}
+		var tenants []string
+		for _, candidate := range tickets {
+			if _, exists := firstByTenant[candidate.TenantID]; !exists {
+				firstByTenant[candidate.TenantID] = candidate
+				tenants = append(tenants, candidate.TenantID)
+			}
+		}
+		sort.Strings(tenants)
+		var scheduler RLFairSchedulerState
+		if err := tx.FirstOrCreate(&scheduler, RLFairSchedulerState{ID: "global"}).Error; err != nil {
+			return err
+		}
+		selected := ""
+		for _, candidateTenant := range tenants {
+			if candidateTenant > scheduler.LastTenant {
+				selected = candidateTenant
+				break
+			}
+		}
+		if selected == "" && len(tenants) > 0 {
+			selected = tenants[0]
+		}
+		head := firstByTenant[selected]
+		if selected != tenantID || head.RunID != runID || head.Owner != owner {
+			return nil
+		}
+		scheduler.LastTenant, scheduler.UpdatedAt = tenantID, time.Now()
+		if err := tx.Save(&scheduler).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&RLFairClaimTicket{}, head.ID).Error; err != nil {
+			return err
+		}
+		granted = true
+		return nil
+	})
+	return granted, err
+}
+
+func (s *StateManager) SaveRLCheckpoint(checkpoint *RLCheckpointRecord) error {
+	var existing RLCheckpointRecord
+	err := s.db.Where("run_id = ? AND optimizer_step = ?", checkpoint.RunID, checkpoint.OptimizerStep).First(&existing).Error
+	if err == nil {
+		if existing.ManifestSHA256 == checkpoint.ManifestSHA256 && existing.ResumeURI == checkpoint.ResumeURI {
+			checkpoint.ID = existing.ID
+			return nil
+		}
+		return errors.New("checkpoint optimizer step is already committed with different content")
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return s.db.Create(checkpoint).Error
+}
+
+func (s *StateManager) GetRLCheckpoint(id string) (*RLCheckpointRecord, error) {
+	var checkpoint RLCheckpointRecord
+	if err := s.db.First(&checkpoint, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &checkpoint, nil
+}
+
+func (s *StateManager) LatestRLCheckpoint(runID string) (*RLCheckpointRecord, error) {
+	var checkpoint RLCheckpointRecord
+	if err := s.db.Where("run_id = ? AND status = ?", runID, "committed").
+		Order("optimizer_step desc").First(&checkpoint).Error; err != nil {
+		return nil, err
+	}
+	return &checkpoint, nil
+}
+
+func (s *StateManager) SaveRLUsage(usage *RLUsageRecord) error {
+	return s.db.Create(usage).Error
+}
+
+func (s *StateManager) SaveRLAudit(audit *RLAuditRecord) error {
+	return s.db.Create(audit).Error
+}
+
+func (s *StateManager) LoadWeightState(ctx context.Context, runID string) ([]byte, error) {
+	var record RLWeightServiceState
+	if err := s.db.WithContext(ctx).First(&record, "run_id = ?", runID).Error; err != nil {
+		return nil, err
+	}
+	return []byte(record.Payload), nil
+}
+
+func (s *StateManager) SaveWeightState(ctx context.Context, runID string, payload []byte) error {
+	return s.db.WithContext(ctx).Save(&RLWeightServiceState{
+		RunID: runID, Payload: string(payload), UpdatedAt: time.Now(),
+	}).Error
+}
+
+func (s *StateManager) SaveRLEvaluation(evaluation *RLEvaluationRecord) error {
+	return s.db.Save(evaluation).Error
+}
+
+func (s *StateManager) GetRLEvaluation(runID, policyVersion string) (*RLEvaluationRecord, error) {
+	var evaluation RLEvaluationRecord
+	if err := s.db.First(&evaluation, "run_id = ? AND policy_version = ?", runID, policyVersion).Error; err != nil {
+		return nil, err
+	}
+	return &evaluation, nil
+}
+
+func (s *StateManager) ListRLUsage(runID string) ([]RLUsageRecord, error) {
+	var usage []RLUsageRecord
+	return usage, s.db.Where("run_id = ?", runID).Order("recorded_at asc").Find(&usage).Error
 }
 
 // Close closes the state manager

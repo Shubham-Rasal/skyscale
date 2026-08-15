@@ -29,20 +29,20 @@ interface RlHeroChartProps {
 export function RlHeroChart({ data, className }: RlHeroChartProps) {
   if (data.length === 0) {
     return (
-      <div className={cn('flex h-48 items-center justify-center rounded-lg border border-border bg-card/40', className)}>
+      <div className={cn('flex h-48 items-center justify-center rounded-sm border border-border bg-card', className)}>
         <p className="text-sm text-muted-foreground">Metrics will appear once training steps are recorded.</p>
       </div>
     )
   }
 
   return (
-    <div className={cn('h-48 rounded-lg border border-border bg-card/40 px-2 py-3', className)}>
+    <div className={cn('h-48 rounded-sm border border-border bg-card px-2 py-3', className)}>
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 8, right: 12, left: -16, bottom: 0 }}>
           <defs>
             <linearGradient id="rewardFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#34d399" stopOpacity={0.25} />
-              <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
+              <stop offset="0%" stopColor="var(--terminal)" stopOpacity={0.2} />
+              <stop offset="100%" stopColor="var(--terminal)" stopOpacity={0} />
             </linearGradient>
           </defs>
           <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
@@ -62,22 +62,22 @@ export function RlHeroChart({ data, className }: RlHeroChartProps) {
             contentStyle={{
               background: 'var(--popover)',
               border: '1px solid var(--border)',
-              borderRadius: 8,
+              borderRadius: 4,
               fontSize: 11,
             }}
           />
           <Area
             type="monotone"
             dataKey="episode_reward"
-            stroke="#34d399"
-            strokeWidth={2}
+            stroke="var(--terminal)"
+            strokeWidth={1.5}
             fill="url(#rewardFill)"
             name="Reward"
           />
           <Line
             type="monotone"
             dataKey="loss"
-            stroke="#fbbf24"
+            stroke="var(--muted-foreground)"
             strokeWidth={1.5}
             dot={false}
             name="Loss"
@@ -101,7 +101,7 @@ export function MiniMetricChart({ title, data, dataKey, color, reservedLabel = '
   const value = latest ? latest[dataKey] : 0
 
   return (
-    <div className="rounded-lg border border-border bg-card/50 p-3">
+    <div className="rounded-sm border border-border bg-card p-3">
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <p className="text-xs font-medium text-foreground">{title}</p>
         <span className="font-mono text-xs tabular-nums text-muted-foreground">
