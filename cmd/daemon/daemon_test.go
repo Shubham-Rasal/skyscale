@@ -14,6 +14,11 @@ import (
 func setupWorkspace(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	original := sandboxWorkspace
+	sandboxWorkspace = dir
+	t.Cleanup(func() {
+		sandboxWorkspace = original
+	})
 	return dir
 }
 
@@ -21,10 +26,6 @@ func setupWorkspace(t *testing.T) string {
 
 func TestSandboxExecPython(t *testing.T) {
 	workspace := setupWorkspace(t)
-	origWS := sandboxWorkspace
-	// Can't reassign a const; use a package-var approach via the test build.
-	// We test the handler directly, overriding the global via init in the test binary.
-	_ = origWS
 	_ = workspace
 
 	body, _ := json.Marshal(sandboxExecRequest{
@@ -57,6 +58,7 @@ func TestSandboxExecPython(t *testing.T) {
 }
 
 func TestSandboxExecBash(t *testing.T) {
+	setupWorkspace(t)
 	body, _ := json.Marshal(sandboxExecRequest{
 		ExecID:   "test-bash",
 		Code:     "echo hello_bash",
@@ -84,6 +86,7 @@ func TestSandboxExecBash(t *testing.T) {
 }
 
 func TestSandboxExecFilePersistence(t *testing.T) {
+	setupWorkspace(t)
 	// Write a file in one exec, read it back in a second exec.
 	// Both execs use sandboxWorkspace as cwd so the file is accessible.
 	writeBody, _ := json.Marshal(sandboxExecRequest{
@@ -130,6 +133,7 @@ func TestSandboxExecFilePersistence(t *testing.T) {
 }
 
 func TestSandboxExecTimeout(t *testing.T) {
+	setupWorkspace(t)
 	body, _ := json.Marshal(sandboxExecRequest{
 		ExecID:   "timeout-exec",
 		Code:     "import time; time.sleep(60)",
@@ -151,6 +155,7 @@ func TestSandboxExecTimeout(t *testing.T) {
 }
 
 func TestSandboxExecUnsupportedLanguage(t *testing.T) {
+	setupWorkspace(t)
 	body, _ := json.Marshal(sandboxExecRequest{
 		Code:     "console.log('hi')",
 		Language: "javascript",
@@ -167,6 +172,7 @@ func TestSandboxExecUnsupportedLanguage(t *testing.T) {
 // ─── /sandbox/files/ tests ───────────────────────────────────────────────────
 
 func TestFileUploadDownload(t *testing.T) {
+	setupWorkspace(t)
 	content := []byte("hello sandbox file")
 
 	// Upload
@@ -193,6 +199,7 @@ func TestFileUploadDownload(t *testing.T) {
 }
 
 func TestFileDownloadMissing(t *testing.T) {
+	setupWorkspace(t)
 	req := httptest.NewRequest(http.MethodGet, "/sandbox/files/nonexistent_file.txt", nil)
 	rr := httptest.NewRecorder()
 	handleSandboxFile(rr, req)
@@ -202,6 +209,7 @@ func TestFileDownloadMissing(t *testing.T) {
 }
 
 func TestFileMethodNotAllowed(t *testing.T) {
+	setupWorkspace(t)
 	req := httptest.NewRequest(http.MethodDelete, "/sandbox/files/somefile.txt", nil)
 	rr := httptest.NewRecorder()
 	handleSandboxFile(rr, req)

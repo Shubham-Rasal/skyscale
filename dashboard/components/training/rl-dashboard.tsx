@@ -103,10 +103,10 @@ export function RlDashboard({ newRunOpen, onNewRunOpenChange, onStatsChange }: R
   }
 
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex min-w-0 flex-1 overflow-hidden">
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="shrink-0 space-y-5 border-b border-border px-6 py-5">
+    <div className="flex min-h-0 flex-1 overflow-y-auto xl:overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col xl:flex-row xl:overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col xl:overflow-hidden">
+          <div className="shrink-0 space-y-4 border-b border-border px-4 py-4 sm:space-y-5 sm:px-6 sm:py-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <p className="font-mono text-xs text-muted-foreground">
@@ -119,7 +119,7 @@ export function RlDashboard({ newRunOpen, onNewRunOpenChange, onStatsChange }: R
               )}
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {[
                 { label: 'Active runs', value: activeRuns, hint: 'Running or starting' },
                 { label: 'Total runs', value: runs.length, hint: `${completedRuns} completed` },
@@ -138,16 +138,16 @@ export function RlDashboard({ newRunOpen, onNewRunOpenChange, onStatsChange }: R
                   <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                     {stat.label}
                   </p>
-                  <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight">{stat.value}</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight sm:text-3xl">{stat.value}</p>
                   <p className="mt-1 truncate text-xs text-muted-foreground">{stat.hint}</p>
                 </div>
               ))}
             </div>
 
-            <RlHeroChart data={heroMetrics} className="h-52" />
+            <RlHeroChart data={heroMetrics} className="h-44 sm:h-52" />
           </div>
 
-          <div className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-3">
+          <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 sm:px-6">
             <div className="relative max-w-sm flex-1">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -159,7 +159,7 @@ export function RlDashboard({ newRunOpen, onNewRunOpenChange, onStatsChange }: R
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-[18rem] flex-1 overflow-y-auto">
             {loading && (
               <p className="p-6 text-sm text-muted-foreground">Loading runs…</p>
             )}
@@ -173,7 +173,7 @@ export function RlDashboard({ newRunOpen, onNewRunOpenChange, onStatsChange }: R
             )}
 
             {!loading && filteredRuns.length > 0 && (
-              <Table>
+              <Table className="min-w-[760px]">
                 <TableHeader className="sticky top-0 z-10 bg-background">
                   <TableRow className="hover:bg-transparent">
                     <TableHead>Run ID</TableHead>

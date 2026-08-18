@@ -24,21 +24,30 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
-interface NewRunForm {
+export interface RlRunPreset {
+  backend?: 'slime' | 'skyscale'
   base_model: string
   num_workers: number
   gpu_model: string
+  problem_set?: string
 }
 
-const defaultForm: NewRunForm = {
+type RlRunForm = RlRunPreset & { backend: 'slime' | 'skyscale' }
+
+const defaultForm: RlRunForm = {
+  backend: 'slime',
   base_model: 'Qwen/Qwen3-0.6B',
   num_workers: 2,
   gpu_model: 'a10g',
+  problem_set: 'default',
 }
 
 const GPU_MODELS = ['a10g', 'a100', 'h100', 't4', 'l4', 'a6000']
 const BASE_MODELS = [
   'Qwen/Qwen3-0.6B',
+  'Qwen/Qwen3-1.7B',
+  'Qwen/Qwen3-4B-Instruct-2507',
+  'deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B',
   'rasdani/Qwen2.5-0.5B-Open-R1-Code-GRPO',
   'Qwen/Qwen2.5-Coder-1.5B-Instruct',
   'Qwen/Qwen2.5-Coder-7B-Instruct',
@@ -65,9 +74,19 @@ export function NewRlRunButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-export function NewRunDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (runId: string) => void }) {
+export function NewRunDialog({
+  open,
+  onClose,
+  onCreated,
+  preset,
+}: {
+  open: boolean
+  onClose: () => void
+  onCreated: (runId: string) => void
+  preset?: RlRunPreset
+}) {
   const { data: session, isPending } = authClient.useSession()
-  const [form, setForm] = useState<NewRunForm>(defaultForm)
+  const [form, setForm] = useState<RlRunForm>(() => ({ ...defaultForm, ...preset }))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -105,11 +124,39 @@ export function NewRunDialog({ open, onClose, onCreated }: { open: boolean; onCl
           )}
 
           <div className="space-y-1.5">
+            <Label>Runtime</Label>
+            <Select
+              value={form.backend}
+              onValueChange={value => {
+                const backend = value as 'slime' | 'skyscale'
+                setForm(current => ({
+                  ...current,
+                  backend,
+                  base_model: backend === 'slime' ? 'Qwen/Qwen3-0.6B' : current.base_model,
+                }))
+              }}
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="slime">Slime on KubeRay</SelectItem>
+                <SelectItem value="skyscale">Legacy workers</SelectItem>
+              </SelectContent>
+            </Select>
+            {form.backend === 'slime' && (
+              <p className="text-xs text-muted-foreground">
+                Uses managed rollout engines, sandbox rewards, and durable checkpoints.
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
             <Label>Base Model</Label>
             <Select value={form.base_model} onValueChange={v => setForm(f => ({ ...f, base_model: v }))}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {BASE_MODELS.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                {(form.backend === 'slime' ? BASE_MODELS.slice(0, 1) : BASE_MODELS).map(m => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

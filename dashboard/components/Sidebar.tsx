@@ -3,9 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  BarChart3,
   Box,
-  Cpu,
   LayoutGrid,
   TrendingUp,
 } from 'lucide-react'
@@ -22,6 +20,7 @@ import {
 } from '@/components/ui/sheet'
 import { AccountSettings } from '@/components/dashboard/account-settings'
 import { LogoMark } from '@/components/marketing/logo-mark'
+import { ThemeSwitcher } from '@/components/theme-switcher'
 import { authClient } from '@/lib/auth-client'
 import { cn } from '@/lib/utils'
 
@@ -32,13 +31,6 @@ const NAV = [
       { label: 'Training', href: '/lab', icon: TrendingUp },
       { label: 'Templates', href: '/templates', icon: LayoutGrid },
       { label: 'Sandboxes', href: '/faas', icon: Box },
-    ],
-  },
-  {
-    section: 'Compute',
-    items: [
-      { label: 'On-Demand GPUs', href: '/gpus', icon: Cpu },
-      { label: 'Load Speed', href: '/benchmarks', icon: BarChart3 },
     ],
   },
 ]
@@ -53,14 +45,25 @@ function profileInitials(name?: string | null, email?: string | null) {
   return '?'
 }
 
-export function Sidebar({ connected }: { connected: boolean }) {
+export function Sidebar({
+  connected,
+  className,
+}: {
+  connected: boolean
+  className?: string
+}) {
   const pathname = usePathname()
   const { data: session, isPending } = authClient.useSession()
   const displayName = session?.user.name ?? session?.user.email ?? 'Guest'
   const subtitle = session ? 'Personal' : 'Sign in for account settings'
 
   return (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+    <aside
+      className={cn(
+        'flex h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground',
+        className,
+      )}
+    >
       <div className="flex items-center px-4 py-4">
         <Link href="/" className="transition-opacity hover:opacity-90">
           <LogoMark size={40} />
@@ -103,6 +106,12 @@ export function Sidebar({ connected }: { connected: boolean }) {
           ))}
         </nav>
       </ScrollArea>
+
+      <Separator className="bg-sidebar-border" />
+
+      <div className="px-3 py-2.5">
+        <ThemeSwitcher className="w-full" />
+      </div>
 
       <Separator className="bg-sidebar-border" />
 

@@ -92,17 +92,34 @@ export const api = {
 
   // RL Training runs
   startRLRun: (body: {
+    backend: 'slime' | 'skyscale'
     base_model: string
     num_workers: number
     gpu_model: string
     problem_set?: string
     control_plane_url?: string
-  }): Promise<{ run_id: string; status: string; trainer_exec_id: string; worker_exec_ids: string[] }> =>
+  }): Promise<{
+    run_id: string
+    status: string
+    backend: string
+    trainer_exec_id?: string
+    worker_exec_ids?: string[]
+    snapshot_sha256?: string
+    namespace?: string
+  }> =>
     fetch('/api/rl/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).then(parseResponse) as Promise<{ run_id: string; status: string; trainer_exec_id: string; worker_exec_ids: string[] }>,
+    }).then(parseResponse) as Promise<{
+      run_id: string
+      status: string
+      backend: string
+      trainer_exec_id?: string
+      worker_exec_ids?: string[]
+      snapshot_sha256?: string
+      namespace?: string
+    }>,
 
   listRLRuns: (): Promise<RLRun[]> =>
     fetch('/api/rl/runs').then(parseResponse) as Promise<RLRun[]>,
@@ -126,9 +143,16 @@ export const api = {
 export interface RLRun {
   ID: string
   Status: string
+  Backend?: string
+  DesiredState?: string
+  ObservedState?: string
   BaseModel: string
   NumWorkers: number
   GPUModel: string
+  Namespace?: string
+  OptimizerStep?: number
+  CheckpointID?: string
+  PolicyVersion?: string
   PolicyServerURL: string
   TrainerExecID: string
   WorkerExecIDs: string

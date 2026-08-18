@@ -52,6 +52,19 @@ kubectl apply -k deploy/k8s
 `rollout-autoscaling-example.yaml`, and `kueue-example.yaml` are deployment
 templates and require site-specific values.
 
+The control plane and every tenant namespace must receive the same runtime
+token. The control-plane Secret key is `runtime-token`; each tenant's
+`skyscale-runtime` Secret exposes it as `SKYSCALE_RUNTIME_TOKEN`. The dashboard
+submits a compact slime preset and the control plane expands it into an
+immutable `RLRunSpec` using `SKYSCALE_SLIME_IMAGE`, `SKYSCALE_SGLANG_IMAGE`,
+`SKYSCALE_MODEL_REVISION`, and `SKYSCALE_MODEL_PVC`.
+
+The model-preparation Job and runtime pods must use the same PVC. Trainer,
+Ray head, submitter, rollout, and checkpoint-reporter containers mount it at
+`/models` by default. The reporter watches Megatron's checkpoint marker,
+creates a content-hashed manifest, and commits optimizer progress and
+checkpoint lineage to `/api/rl/v1`.
+
 SkyScale reconciliation is the authoritative rollout scaler. Do not apply the
 example HPA to a fleet while controller scaling is enabled, because two writers
 to `Deployment.spec.replicas` produce unstable scaling. Queue depth, generation
@@ -105,10 +118,10 @@ multi-tenant quota, rendering, and adapter checks:
 bash scripts/validation/validate_slime_local.sh
 ```
 
-Hardware/infrastructure-gated validation is intentionally not claimed by local
+Hardware/infrastructure-gated validation is intentionally separate from local
 tests:
 
-- M1: one H100/H200 80 GB recommended (24 GB is experimental) for rollout →
+- M1: one 24 GB NVIDIA L4 has passed rollout →
   sandbox reward → optimizer step → checkpoint → cleanup.
 - M2: two GPUs, PostgreSQL, and object storage for trainer/rollout
   disaggregation and restart recovery.
@@ -168,6 +181,8 @@ python3 "$GPU" smoke --name skyscale-slime
 python3 "$GPU" terminate --name skyscale-slime
 ```
 
-Full M1 numerical training (`train.py` + sandbox rewards) still requires the
-control plane, RayJob, and either colocated k3s or EKS as described above.
+The EC2 path now proves full M1 numerical training (`train.py` + sandbox
+rewards) in a single Docker container. It does not validate KubeRay
+reconciliation, PostgreSQL/S3 persistence, multi-pod weight publication, or
+restart recovery; those remain cluster-gated M2+ checks.
 Rotate any AWS keys that were ever pasted into chat or logs.

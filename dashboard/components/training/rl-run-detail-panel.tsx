@@ -45,9 +45,9 @@ export function RlRunDetailPanel({ runId, onClose }: RlRunDetailPanelProps) {
   const canStop = detail && (detail.run.Status === 'running' || detail.run.Status === 'starting')
 
   return (
-    <aside className="flex w-[min(480px,42%)] shrink-0 flex-col border-l border-border bg-background">
+    <aside className="flex min-h-[38rem] w-full shrink-0 flex-col border-t border-border bg-background xl:min-h-0 xl:w-[min(480px,42%)] xl:border-l xl:border-t-0">
       <div className="shrink-0 space-y-3 border-b border-border p-4">
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <MiniMetricChart title="Episode reward" data={metrics} dataKey="episode_reward" color="var(--terminal)" />
           <MiniMetricChart title="Training loss" data={metrics} dataKey="loss" color="var(--muted-foreground)" />
         </div>
@@ -55,7 +55,7 @@ export function RlRunDetailPanel({ runId, onClose }: RlRunDetailPanelProps) {
       </div>
 
       <Tabs defaultValue="logs" className="flex min-h-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-border px-4 pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 pt-3 sm:px-4">
           <TabsList className="h-8 bg-transparent p-0">
             <TabsTrigger
               value="logs"
@@ -87,7 +87,7 @@ export function RlRunDetailPanel({ runId, onClose }: RlRunDetailPanelProps) {
         </div>
 
         <TabsContent value="logs" className="mt-0 min-h-0 flex-1 data-[state=inactive]:hidden">
-          <ScrollArea className="h-[calc(100vh-22rem)]">
+          <ScrollArea className="h-72 xl:h-[calc(100vh-22rem)]">
             <div className="space-y-0 p-2 font-mono text-[11px] leading-relaxed">
               {!detail && <p className="p-3 text-muted-foreground">Loading…</p>}
               {detail && events.length === 0 && (
@@ -107,11 +107,24 @@ export function RlRunDetailPanel({ runId, onClose }: RlRunDetailPanelProps) {
             <dl className="space-y-3 text-sm">
               <DetailItem label="Run ID" value={detail.run.ID} mono />
               <DetailItem label="Status" value={<StatusBadge status={detail.run.Status} />} />
+              <DetailItem label="Runtime" value={detail.run.Backend === 'slime' ? 'Slime on KubeRay' : 'Legacy workers'} />
               <DetailItem label="Stage" value={stageLabel(detail.stage)} />
+              {detail.run.Backend === 'slime' && detail.run.ObservedState && (
+                <DetailItem label="Observed" value={detail.run.ObservedState} />
+              )}
               <DetailItem label="Base model" value={detail.run.BaseModel} mono />
               <DetailItem label="GPU" value={detail.run.GPUModel.toUpperCase()} />
               <DetailItem label="Workers" value={String(detail.run.NumWorkers)} />
-              <DetailItem label="Buffer" value={`${detail.buffer_size} trajectories`} />
+              {detail.run.Backend === 'slime' ? (
+                <>
+                  <DetailItem label="Optimizer step" value={String(detail.run.OptimizerStep ?? 0)} />
+                  {detail.run.PolicyVersion && <DetailItem label="Policy version" value={detail.run.PolicyVersion} mono />}
+                  {detail.run.CheckpointID && <DetailItem label="Checkpoint" value={detail.run.CheckpointID} mono />}
+                  {detail.run.Namespace && <DetailItem label="Namespace" value={detail.run.Namespace} mono />}
+                </>
+              ) : (
+                <DetailItem label="Buffer" value={`${detail.buffer_size} trajectories`} />
+              )}
               {detail.run.PolicyServerURL && (
                 <DetailItem label="Policy URL" value={detail.run.PolicyServerURL} mono />
               )}
@@ -128,7 +141,7 @@ export function RlRunDetailPanel({ runId, onClose }: RlRunDetailPanelProps) {
         </TabsContent>
 
         <TabsContent value="events" className="mt-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
-          <ScrollArea className="h-[calc(100vh-22rem)]">
+          <ScrollArea className="h-72 xl:h-[calc(100vh-22rem)]">
             <div className="divide-y divide-border">
               {events.length === 0 ? (
                 <p className="p-4 text-sm text-muted-foreground">No pipeline events yet.</p>

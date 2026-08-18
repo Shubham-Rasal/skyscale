@@ -1,4 +1,4 @@
-import { Box, Cpu, Layers, TrendingUp, Zap } from 'lucide-react'
+import { Box, Layers, TrendingUp, Zap } from 'lucide-react'
 
 const SECTIONS = [
   {
@@ -38,24 +38,8 @@ POST /api/rl/env/close  →  204`,
     reverse: true,
   },
   {
-    id: 'compute',
-    fig: '03',
-    icon: Cpu,
-    title: 'Compute',
-    subtitle: 'Heterogeneous GPU orchestration',
-    description:
-      'Schedule workloads across Modal, Akash, HuggingFace, and AWS from a single control plane. On-demand GPU jobs, spot pricing, and real-time pool visibility.',
-    bullets: [
-      'Multi-provider GPU pool',
-      'Firecracker microVMs for isolation',
-      'Prometheus + Grafana observability',
-    ],
-    code: `POST /api/jobs/submit
-  { provider: "modal", gpu: "A100" }`,
-  },
-  {
     id: 'sandboxes',
-    fig: '04',
+    fig: '03',
     icon: Box,
     title: 'Sandboxes',
     subtitle: 'Secure code execution for agents',
@@ -68,18 +52,17 @@ POST /api/rl/env/close  →  204`,
     ],
     code: `POST /api/faas/containers
   { template_id, env: { ... } }`,
-    reverse: true,
   },
 ]
 
 export function MarketingFeatures() {
   return (
-    <section id="features" className="relative border-t border-border/60 py-24">
+    <section id="features" className="relative border-t border-border/60 py-16 sm:py-24">
       <div className="pointer-events-none absolute inset-0 bg-galaxy-subtle" />
-      <div className="relative mx-auto max-w-6xl px-6">
-        <div className="mx-auto mb-16 max-w-2xl text-center">
+      <div className="relative mx-auto max-w-6xl px-4 sm:px-6">
+        <div className="mx-auto mb-12 max-w-2xl text-center sm:mb-16">
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">Platform</p>
-          <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
+          <h2 className="mt-3 text-2xl font-semibold tracking-tight sm:text-4xl">
             The open RL stack for post-training
           </h2>
           <p className="mt-4 text-muted-foreground">
@@ -88,14 +71,14 @@ export function MarketingFeatures() {
           </p>
         </div>
 
-        <div className="space-y-24">
+        <div className="space-y-16 sm:space-y-24">
           {SECTIONS.map(section => {
             const Icon = section.icon
             return (
               <article
                 key={section.id}
                 id={section.id}
-                className="scroll-mt-24 grid items-center gap-10 lg:grid-cols-2 lg:gap-16"
+                className="scroll-mt-24 grid min-w-0 items-center gap-8 lg:grid-cols-2 lg:gap-16"
               >
                 <div className={section.reverse ? 'lg:order-2' : undefined}>
                   <div className="mb-4 flex items-center gap-3">
@@ -104,7 +87,7 @@ export function MarketingFeatures() {
                       <Icon className="size-4 text-primary" />
                     </div>
                   </div>
-                  <h3 className="text-2xl font-semibold tracking-tight">{section.title}</h3>
+                  <h3 className="text-xl font-semibold tracking-tight sm:text-2xl">{section.title}</h3>
                   <p className="mt-1 text-sm text-muted-foreground">{section.subtitle}</p>
                   <p className="mt-4 leading-relaxed text-muted-foreground">{section.description}</p>
                   <ul className="mt-6 space-y-2">
@@ -118,9 +101,9 @@ export function MarketingFeatures() {
                 </div>
 
                 <div
-                  className={`rounded-sm border border-border bg-card p-1 ${section.reverse ? 'lg:order-1' : ''}`}
+                  className={`min-w-0 rounded-[var(--radius-card)] border border-border bg-card p-1 ${section.reverse ? 'lg:order-1' : ''}`}
                 >
-                  <div className="rounded-sm border border-border bg-background p-5">
+                  <div className="rounded-[8px] border border-border bg-background p-3 sm:p-5">
                     <div className="mb-3 flex items-center gap-2">
                       <span className="size-2 rounded-full bg-muted-foreground/40" />
                       <span className="size-2 rounded-full bg-muted-foreground/30" />
@@ -129,7 +112,7 @@ export function MarketingFeatures() {
                         skyscale-api
                       </span>
                     </div>
-                    <pre className="overflow-x-auto font-mono text-xs leading-relaxed text-foreground/90 sm:text-sm">
+                    <pre className="w-full max-w-full overflow-x-auto font-mono text-xs leading-relaxed text-foreground/90 sm:text-sm">
                       <code>{section.code}</code>
                     </pre>
                   </div>

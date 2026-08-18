@@ -55,7 +55,9 @@ wait_http() {
 }
 
 log "starting sandbox daemon"
-VM_ID=host-vm-test VM_IP=127.0.0.1 "${DAEMON_BIN}" >"${LOG_DIR}/daemon.log" 2>&1 &
+SANDBOX_WORKSPACE="${ROOT}/.aws-e2e-sandbox" \
+  VM_ID=host-vm-test VM_IP=127.0.0.1 \
+  "${DAEMON_BIN}" >"${LOG_DIR}/daemon.log" 2>&1 &
 DAEMON_PID=$!
 wait_http "http://127.0.0.1:8081/health" 30
 
@@ -78,7 +80,7 @@ log "running slime one-GPU RL loop (this may take 20-60 minutes)"
 export SKYSCALE_CONTROL_PLANE_URL="${CP_URL}"
 export SKYSCALE_RUN_ID="${RUN_ID}"
 export MODEL_ROOT
-${DOCKER} run --rm --gpus all --network host \
+${DOCKER} run --rm --gpus all --network host --ipc=host \
   -v "${MODEL_ROOT}:${MODEL_ROOT}" \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -e MODEL_ROOT \

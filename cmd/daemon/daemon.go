@@ -21,7 +21,6 @@ const (
 	daemonPort = "8081" // Port for the daemon to listen on
 	codeDir          = "/tmp/faas/code"
 	logDir           = "/var/log/faas"
-	sandboxWorkspace = "/sandbox/workspace" // Persistent workspace for sandbox sessions
 
 	// Endpoints
 	functionEndpoint = "/api/functions"
@@ -70,12 +69,22 @@ type VMInfo struct {
 var vmInfo VMInfo
 var httpClient *http.Client
 var controlPlaneURL string
+var sandboxWorkspace = envOrDefault("SANDBOX_WORKSPACE", "/sandbox/workspace")
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
 
 func init() {
 	// Create necessary directories
-	os.MkdirAll(codeDir, 0755)
-	os.MkdirAll(logDir, 0755)
-	os.MkdirAll(sandboxWorkspace, 0755)
+	for _, directory := range []string{codeDir, logDir, sandboxWorkspace} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			log.Printf("Failed to create directory %s: %v", directory, err)
+		}
+	}
 
 	// Read control plane URL from env, fall back to Firecracker CNI gateway
 	controlPlaneURL = os.Getenv("CONTROL_PLANE_URL")

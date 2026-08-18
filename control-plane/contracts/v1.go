@@ -33,6 +33,8 @@ type ModelSpec struct {
 	MegatronFormat      string `json:"megatron_format,omitempty"`
 	TokenizerRevision   string `json:"tokenizer_revision,omitempty"`
 	ArtifactManifestURI string `json:"artifact_manifest_uri,omitempty"`
+	VolumeClaim         string `json:"volume_claim,omitempty"`
+	MountPath           string `json:"mount_path,omitempty"`
 }
 
 type DataSpec struct {
@@ -171,13 +173,16 @@ func DefaultRunSpec() RLRunSpec {
 		APIVersion: APIVersion,
 		Kind:       "RLRun",
 		Backend:    "slime",
-		Model:      ModelSpec{Source: "Qwen/Qwen3-0.6B", Revision: "main", MegatronFormat: "torch_dist"},
-		Data:       DataSpec{SourceURI: "skyscale://problems/default", Revision: "v1", EnvironmentVersion: "code-v1", Seed: 42},
-		Reward:     RewardSpec{Name: "sandbox-tests", Version: "v1", MaxEvaluationSec: 120},
-		Algorithm:  AlgorithmSpec{Name: "grpo", Strategy: "synchronous", MaxPolicyLagSteps: 0, MaxQueueAgeSeconds: 900, OffPolicyAction: "discard"},
+		Model: ModelSpec{
+			Source: "Qwen/Qwen3-0.6B", Revision: "main", MegatronFormat: "torch_dist",
+			VolumeClaim: "qwen3-0-6b-models", MountPath: "/models",
+		},
+		Data:      DataSpec{SourceURI: "skyscale://problems/default", Revision: "v1", EnvironmentVersion: "code-v1", Seed: 42},
+		Reward:    RewardSpec{Name: "sandbox-tests", Version: "v1", MaxEvaluationSec: 120},
+		Algorithm: AlgorithmSpec{Name: "grpo", Strategy: "synchronous", MaxPolicyLagSteps: 0, MaxQueueAgeSeconds: 900, OffPolicyAction: "discard"},
 		Topology: TopologySpec{
 			Mode:    "colocated",
-			Trainer: TrainerTopology{Nodes: 1, TP: 1, PP: 1, CP: 1, Resources: ResourceSpec{CPU: "8", Memory: "32Gi", GPUs: 1}},
+			Trainer: TrainerTopology{Nodes: 1, TP: 1, PP: 1, CP: 1, Resources: ResourceSpec{CPU: "6", Memory: "24Gi", GPUs: 1}},
 			Rollout: RolloutTopology{Replicas: 1, MinReplicas: 1, MaxReplicas: 1, TP: 1, DP: 1, MemoryFraction: 0.35, Resources: ResourceSpec{GPUs: 1}},
 		},
 		Checkpoint: CheckpointPolicy{EverySteps: 1, KeepLast: 3, ServingFormat: "full", MinimumAcks: 1, PublishTimeoutSec: 600},
@@ -224,6 +229,15 @@ func (s RLRunSpec) Validate() error {
 	if s.Model.Source == "" || s.Model.Revision == "" {
 		problems = append(problems, "model source and immutable revision are required")
 	}
+	if s.Model.VolumeClaim != "" && !dnsLabel.MatchString(s.Model.VolumeClaim) {
+		problems = append(problems, "model volume_claim must be a DNS label")
+	}
+	if s.Model.MountPath != "" && !strings.HasPrefix(s.Model.MountPath, "/") {
+		problems = append(problems, "model mount_path must be absolute")
+	}
+	if (s.Model.VolumeClaim == "") != (s.Model.MountPath == "") {
+		problems = append(problems, "model volume_claim and mount_path must be set together")
+	}
 	algorithms := map[string]bool{"grpo": true, "gspo": true, "cispo": true, "reinforce++": true, "ppo": true, "sft": true, "custom": true}
 	if !algorithms[strings.ToLower(s.Algorithm.Name)] {
 		problems = append(problems, "unsupported algorithm")
@@ -257,6 +271,9 @@ func (s RLRunSpec) Validate() error {
 	}
 	if s.Topology.Mode == "colocated" && r.External {
 		problems = append(problems, "colocated rollout cannot be external")
+	}
+	if s.Algorithm.Strategy == "asynchronous" && s.Topology.Mode != "disaggregated" {
+		problems = append(problems, "asynchronous strategy requires disaggregated topology")
 	}
 	if s.Retention.LowWatermarkGroups < 0 || s.Retention.HighWatermarkGroups <= s.Retention.LowWatermarkGroups {
 		problems = append(problems, "high watermark must exceed low watermark")

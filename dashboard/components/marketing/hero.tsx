@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 
 export function MarketingHero() {
   return (
-    <section className="relative min-h-[92vh] overflow-hidden">
+    <section className="relative min-h-[100svh] overflow-hidden sm:min-h-[92vh]">
       <div className="absolute inset-0">
         <Image
           src="/hero.png"
@@ -20,7 +20,7 @@ export function MarketingHero() {
         <div className="pointer-events-none absolute inset-0 bg-galaxy-radial opacity-50" />
       </div>
 
-      <div className="relative mx-auto flex min-h-[92vh] max-w-6xl flex-col justify-center px-6 pb-20 pt-28 md:pt-32">
+      <div className="relative mx-auto flex min-h-[100svh] max-w-6xl flex-col justify-center px-4 pb-14 pt-24 sm:min-h-[92vh] sm:px-6 sm:pb-20 sm:pt-28 md:pt-32">
         <p className="mb-5 text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
           The Open RL Stack
         </p>
@@ -34,10 +34,10 @@ export function MarketingHero() {
           trainers orchestrated from one API call.
         </p>
 
-        <div className="mt-8 flex flex-wrap items-center gap-3">
-          <Button size="lg" asChild className="h-11 rounded-sm px-6 font-medium">
+        <div className="mt-8 grid w-full gap-3 min-[420px]:flex min-[420px]:w-auto min-[420px]:flex-wrap min-[420px]:items-center">
+          <Button size="lg" asChild className="h-11 px-6 font-medium">
             <Link href="/lab">
-              Start training
+              See live training
               <ArrowRight className="size-4" />
             </Link>
           </Button>
@@ -45,17 +45,17 @@ export function MarketingHero() {
             size="lg"
             variant="outline"
             asChild
-            className="h-11 rounded-sm border-border/60 bg-background/20 px-6 backdrop-blur-sm hover:bg-accent/50"
+            className="h-11 border-border/60 bg-background/20 px-6 backdrop-blur-sm hover:bg-accent/50"
           >
             <Link href="/#lab">Explore the stack</Link>
           </Button>
         </div>
 
-        <p className="mt-8 font-mono text-sm text-terminal">
+        <p className="mt-8 max-w-full break-all font-mono text-xs text-terminal sm:text-sm">
           $ curl -X POST $SKYSCALE/api/rl/runs
         </p>
 
-        <div className="mt-14 grid max-w-lg grid-cols-3 gap-px border border-border/60 bg-border/60">
+        <div className="mt-12 grid w-full max-w-lg grid-cols-1 gap-px border border-border/60 bg-border/60 min-[420px]:grid-cols-3 sm:mt-14">
           {[
             { label: 'Workers', value: 'N × CPU' },
             { label: 'Policy', value: 'vLLM GPU' },

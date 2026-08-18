@@ -88,6 +88,21 @@ spec:
               value: "2"
             - name: SKYSCALE_RL_TENANT_MAX_GPUS
               value: "8"
+            - name: SKYSCALE_SLIME_IMAGE
+              value: ghcr.io/skyscale/slime-runtime@sha256:REPLACE_WITH_BUILT_DIGEST
+            - name: SKYSCALE_SGLANG_IMAGE
+              value: ghcr.io/skyscale/slime-runtime@sha256:REPLACE_WITH_BUILT_DIGEST
+            - name: SKYSCALE_MODEL_REVISION
+              value: REPLACE_WITH_IMMUTABLE_HF_REVISION
+            - name: SKYSCALE_MODEL_PVC
+              value: qwen3-0-6b-models
+            - name: SKYSCALE_RUNTIME_SECRET
+              value: skyscale-runtime
+            - name: SKYSCALE_RUNTIME_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: skyscale-control-plane
+                  key: runtime-token
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

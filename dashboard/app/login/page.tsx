@@ -54,7 +54,7 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="relative grid min-h-screen place-items-center bg-background p-6">
+    <main className="relative grid min-h-dvh place-items-center bg-background p-4 sm:p-6">
       <div className="pointer-events-none absolute inset-0 bg-galaxy-subtle opacity-50" />
 
       <Card className="relative z-10 w-full max-w-md border-border/60 bg-card/80 shadow-none backdrop-blur-sm">

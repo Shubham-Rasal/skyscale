@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bluequbit/faas/control-plane/contracts"
@@ -14,6 +15,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
+
+type slimeRunPreset struct {
+	BaseModel  string `json:"base_model"`
+	NumWorkers int    `json:"num_workers"`
+	GPUModel   string `json:"gpu_model"`
+	ProblemSet string `json:"problem_set"`
+}
 
 func (h *APIHandler) rlStartSlimeRunHandler(w http.ResponseWriter, r *http.Request, raw []byte) {
 	if h.rlReconciler == nil {
@@ -30,9 +38,14 @@ func (h *APIHandler) rlStartSlimeRunHandler(w http.ResponseWriter, r *http.Reque
 	}
 	if wrapper.Spec != nil {
 		spec = *wrapper.Spec
-	} else if err := json.Unmarshal(raw, &spec); err != nil {
-		http.Error(w, "invalid run contract", http.StatusBadRequest)
-		return
+	} else {
+		var preset slimeRunPreset
+		if err := json.Unmarshal(raw, &preset); err == nil && preset.BaseModel != "" {
+			spec = slimeSpecFromPreset(preset, r)
+		} else if err := json.Unmarshal(raw, &spec); err != nil {
+			http.Error(w, "invalid run contract", http.StatusBadRequest)
+			return
+		}
 	}
 	spec.Normalize()
 	spec.Backend = "slime"
@@ -86,6 +99,67 @@ func (h *APIHandler) rlStartSlimeRunHandler(w http.ResponseWriter, r *http.Reque
 		"api_version": spec.APIVersion, "run_id": run.ID, "status": run.Status,
 		"backend": run.Backend, "snapshot_sha256": snapshot.SHA256, "namespace": run.Namespace,
 	})
+}
+
+func slimeSpecFromPreset(preset slimeRunPreset, r *http.Request) contracts.RLRunSpec {
+	spec := contracts.DefaultRunSpec()
+	spec.Metadata.TenantID = headerEnvOrDefault(r, "X-Skyscale-Tenant", "SKYSCALE_DEFAULT_TENANT", "default")
+	spec.Metadata.ProjectID = headerEnvOrDefault(r, "X-Skyscale-Project", "SKYSCALE_DEFAULT_PROJECT", "default")
+	spec.Model.Source = preset.BaseModel
+	spec.Model.Revision = envOrDefault("SKYSCALE_MODEL_REVISION", "main")
+	spec.Model.VolumeClaim = envOrDefault("SKYSCALE_MODEL_PVC", "qwen3-0-6b-models")
+	spec.Model.MountPath = envOrDefault("SKYSCALE_MODEL_MOUNT_PATH", "/models")
+	if preset.ProblemSet != "" {
+		spec.Data.SourceURI = "skyscale://problems/" + preset.ProblemSet
+	}
+	if preset.GPUModel != "" {
+		spec.Topology.Trainer.Resources.GPUType = preset.GPUModel
+		spec.Topology.Rollout.Resources.GPUType = preset.GPUModel
+	}
+	if preset.NumWorkers > 1 {
+		spec.Topology.Mode = "disaggregated"
+		spec.Topology.Rollout.External = true
+		spec.Topology.Rollout.Replicas = preset.NumWorkers
+		spec.Topology.Rollout.MinReplicas = preset.NumWorkers
+		spec.Topology.Rollout.MaxReplicas = preset.NumWorkers
+		spec.Topology.Rollout.Resources.GPUs = 1
+	} else {
+		spec.Topology.Mode = "colocated"
+		spec.Topology.Rollout.External = false
+		spec.Topology.Rollout.Replicas = 1
+		spec.Topology.Rollout.MinReplicas = 1
+		spec.Topology.Rollout.MaxReplicas = 1
+	}
+	spec.Image.Slime = envOrDefault("SKYSCALE_SLIME_IMAGE", spec.Image.Slime)
+	spec.Image.SGLang = envOrDefault("SKYSCALE_SGLANG_IMAGE", spec.Image.Slime)
+	spec.Image.Digest = os.Getenv("SKYSCALE_SLIME_IMAGE_DIGEST")
+	spec.Security.ImageAllowlist = splitNonEmpty(envOrDefault("SKYSCALE_RL_IMAGE_ALLOWLIST", "ghcr.io/skyscale/"))
+	spec.Security.SecretRefs = splitNonEmpty(envOrDefault("SKYSCALE_RUNTIME_SECRET", "skyscale-runtime"))
+	return spec
+}
+
+func headerEnvOrDefault(r *http.Request, header, env, fallback string) string {
+	if value := r.Header.Get(header); value != "" {
+		return value
+	}
+	return envOrDefault(env, fallback)
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func splitNonEmpty(value string) []string {
+	var values []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			values = append(values, item)
+		}
+	}
+	return values
 }
 
 func envInt(name string, fallback int) int {
